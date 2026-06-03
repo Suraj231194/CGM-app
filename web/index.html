@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover"
+  >
+  <meta name="description" content="Optimus CGM health dashboard.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="optimus_cgm_flutter">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>Optimus CGM</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: #f3f7ed;
+      font-family: Inter, Arial, sans-serif;
+      overflow: hidden;
+    }
+
+    #app-loader {
+      align-items: center;
+      background: #f3f7ed;
+      box-sizing: border-box;
+      display: flex;
+      height: 100dvh;
+      justify-content: center;
+      left: 0;
+      padding: 24px;
+      position: fixed;
+      top: 0;
+      width: 100dvw;
+      z-index: 9999;
+    }
+
+    .loader-panel {
+      background: #ffffff;
+      border: 1px solid #dce8d3;
+      border-radius: 12px;
+      box-shadow: 0 22px 60px rgba(13, 59, 62, 0.14);
+      box-sizing: border-box;
+      max-width: 340px;
+      padding: 22px;
+      width: 100%;
+    }
+
+    .loader-brand {
+      align-items: center;
+      color: #0f172a;
+      display: flex;
+      font-size: 17px;
+      font-weight: 800;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .loader-icon {
+      align-items: center;
+      background: #0d3b3e;
+      border-radius: 10px;
+      color: #ffffff;
+      display: flex;
+      flex: 0 0 auto;
+      font-size: 12px;
+      font-weight: 900;
+      height: 42px;
+      justify-content: center;
+      width: 42px;
+    }
+
+    .loader-bar {
+      background: #dce8d3;
+      border-radius: 999px;
+      height: 8px;
+      overflow: hidden;
+      width: 100%;
+    }
+
+    .loader-bar::before {
+      animation: loading 1.2s ease-in-out infinite;
+      background: linear-gradient(90deg, #0d3b3e, #5ec7a2, #d28b00);
+      content: "";
+      display: block;
+      height: 100%;
+      width: 42%;
+    }
+
+    .loader-title {
+      color: #0d3b3e;
+      font-size: 24px;
+      font-weight: 900;
+      line-height: 1.1;
+      margin: 0 0 10px;
+    }
+
+    .loader-copy {
+      color: #596b5f;
+      font-size: 15px;
+      line-height: 1.45;
+      margin: 0 0 24px;
+    }
+
+    @media (max-width: 420px) {
+      #app-loader {
+        padding: 16px;
+      }
+
+      .loader-panel {
+        box-shadow: none;
+        max-width: none;
+      }
+    }
+
+    @keyframes loading {
+      0% {
+        transform: translateX(-100%);
+      }
+      100% {
+        transform: translateX(250%);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app-loader">
+    <div class="loader-panel">
+      <div class="loader-brand">
+        <div class="loader-icon">CGM</div>
+        <span>Optimus CGM</span>
+      </div>
+      <p class="loader-title">Loading your glucose workspace</p>
+      <p class="loader-copy">Syncing CGM trends, meal context, coaching notes, and reports.</p>
+      <div class="loader-bar"></div>
+    </div>
+  </div>
+  <script>
+    window.addEventListener('flutter-first-frame', function () {
+      var loader = document.getElementById('app-loader');
+      if (loader) {
+        loader.remove();
+      }
+    });
+  </script>
+  <!--
+    You can customize the "flutter_bootstrap.js" script.
+    This is useful to provide a custom configuration to the Flutter loader
+    or to give the user feedback during the initialization process.
+
+    For more details:
+    * https://docs.flutter.dev/platform-integration/web/initialization
+  -->
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

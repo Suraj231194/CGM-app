@@ -1,0 +1,4 @@
+framework module StayOnFramework {
+  header "StayOnFramework-Swift.h"
+  requires objc
+}
