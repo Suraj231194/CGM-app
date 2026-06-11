@@ -60,6 +60,30 @@ class CgmSdkService {
     }
   }
 
+  Future<String> requestCameraPermission() async {
+    try {
+      final result = await _methodChannel.invokeMethod<String>(
+        'requestCameraPermission',
+      );
+      return result ?? 'unknown';
+    } on PlatformException catch (e) {
+      debugPrint(
+        '[CgmSdk] requestCameraPermission PlatformException: ${e.message}',
+      );
+      return 'error';
+    }
+  }
+
+  Future<void> openAppPermissionSettings() async {
+    try {
+      await _methodChannel.invokeMethod<void>('openAppPermissionSettings');
+    } on PlatformException catch (e) {
+      debugPrint(
+        '[CgmSdk] openAppPermissionSettings PlatformException: ${e.message}',
+      );
+    }
+  }
+
   Future<String> requestBleAndBackgroundPermissions() async {
     try {
       final result = await _methodChannel.invokeMethod<String>(

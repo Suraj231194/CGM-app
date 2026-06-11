@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:clock/clock.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -12,58 +13,74 @@ void main() {
   GoogleFonts.config.allowRuntimeFetching = false;
 
   testWidgets('golden welcome screen', (tester) async {
-    _setGoldenSurface(tester);
-    await tester.pumpWidget(_testApp());
-    await tester.pumpAndSettle();
+    await _runGolden(tester, () async {
+      _setGoldenSurface(tester);
+      await tester.pumpWidget(_testApp());
+      await tester.pumpAndSettle();
 
-    await expectLater(
-      find.byType(MaterialApp),
-      matchesGoldenFile('goldens/welcome.png'),
-    );
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/welcome.png'),
+      );
+    });
   });
 
   testWidgets('golden dashboard screen', (tester) async {
-    _setGoldenSurface(tester);
-    await _openCustomerDashboard(tester);
+    await _runGolden(tester, () async {
+      _setGoldenSurface(tester);
+      await _openCustomerDashboard(tester);
 
-    await expectLater(
-      find.byType(MaterialApp),
-      matchesGoldenFile('goldens/dashboard.png'),
-    );
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/dashboard.png'),
+      );
+    });
   });
 
   testWidgets('golden logbook screen', (tester) async {
-    _setGoldenSurface(tester);
-    await _openCustomerDashboard(tester);
-    await _go(tester, '/readings');
+    await _runGolden(tester, () async {
+      _setGoldenSurface(tester);
+      await _openCustomerDashboard(tester);
+      await _go(tester, '/readings');
 
-    await expectLater(
-      find.byType(MaterialApp),
-      matchesGoldenFile('goldens/logbook.png'),
-    );
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/logbook.png'),
+      );
+    });
   });
 
   testWidgets('golden AI screen', (tester) async {
-    _setGoldenSurface(tester);
-    await _openCustomerDashboard(tester);
-    await _go(tester, '/ai');
+    await _runGolden(tester, () async {
+      _setGoldenSurface(tester);
+      await _openCustomerDashboard(tester);
+      await _go(tester, '/ai');
 
-    await expectLater(
-      find.byType(MaterialApp),
-      matchesGoldenFile('goldens/ai.png'),
-    );
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/ai.png'),
+      );
+    });
   });
 
   testWidgets('golden chart screen', (tester) async {
-    _setGoldenSurface(tester);
-    await _openCustomerDashboard(tester);
-    await _go(tester, '/chart');
+    await _runGolden(tester, () async {
+      _setGoldenSurface(tester);
+      await _openCustomerDashboard(tester);
+      await _go(tester, '/chart');
 
-    await expectLater(
-      find.byType(MaterialApp),
-      matchesGoldenFile('goldens/chart.png'),
-    );
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('goldens/chart.png'),
+      );
+    });
   });
+}
+
+final _goldenNow = DateTime(2026, 6, 2, 18, 30);
+
+Future<void> _runGolden(WidgetTester tester, Future<void> Function() run) {
+  return withClock(Clock.fixed(_goldenNow), run);
 }
 
 void _setGoldenSurface(WidgetTester tester) {
@@ -119,12 +136,30 @@ class GoldenAppController extends AppController {
   AppState build() {
     final base = super.build();
     return base.copyWith(
+      sensors: _goldenSensors(),
       readings: _goldenReadings(),
       meals: _goldenMeals(),
       alerts: _goldenAlerts(),
       reportExports: _goldenReports(),
     );
   }
+}
+
+List<Sensor> _goldenSensors() {
+  return [
+    Sensor(
+      id: 'sensor-1',
+      serialNumber: 'OPT-CGM-14D-001',
+      patientId: 'patient-1',
+      status: SensorStatus.active,
+      activationDate: _goldenNow.subtract(const Duration(days: 9)),
+      expiryDate: _goldenNow.add(const Duration(days: 5)),
+      warmupStartTime: _goldenNow.subtract(const Duration(days: 9, hours: 1)),
+      warmupEndTime: _goldenNow.subtract(const Duration(days: 9)),
+      batteryStatus: 74,
+      connectionStatus: ConnectionStatus.connected,
+    ),
+  ];
 }
 
 List<OptimusGlucoseReading> _goldenReadings() {

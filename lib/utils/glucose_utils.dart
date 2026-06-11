@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:clock/clock.dart';
 import 'package:intl/intl.dart';
 
 import '../app/theme.dart';
@@ -45,7 +46,7 @@ String formatTime(DateTime value) => DateFormat('h:mm a').format(value);
 String formatShortDate(DateTime value) => DateFormat('MMM d').format(value);
 
 String freshness(DateTime value) {
-  final minutes = DateTime.now().difference(value).inMinutes.clamp(0, 99999);
+  final minutes = clock.now().difference(value).inMinutes.clamp(0, 99999);
   if (minutes < 1) return 'Just now';
   if (minutes == 1) return '1 min ago';
   if (minutes < 60) return '$minutes min ago';
@@ -65,7 +66,7 @@ List<OptimusGlucoseReading> filterReadingsByDuration(
     ChartDuration.week => 7 * 24 * 60,
     ChartDuration.twoWeeks => 14 * 24 * 60,
   };
-  final cutoff = DateTime.now().subtract(Duration(minutes: minutes));
+  final cutoff = clock.now().subtract(Duration(minutes: minutes));
   return readings
       .where((reading) => reading.timestamp.isAfter(cutoff))
       .toList();
@@ -109,13 +110,13 @@ GlucoseStatus statusFromValue(int value) {
 int sensorDaysRemaining(Sensor? sensor) {
   final expiryDate = sensor?.expiryDate;
   if (expiryDate == null) return 0;
-  return expiryDate.difference(DateTime.now()).inDays.clamp(0, 999);
+  return expiryDate.difference(clock.now()).inDays.clamp(0, 999);
 }
 
 int warmupMinutesRemaining(Sensor? sensor) {
   final warmupEndTime = sensor?.warmupEndTime;
   if (warmupEndTime == null) return 0;
-  return warmupEndTime.difference(DateTime.now()).inMinutes.clamp(0, 999);
+  return warmupEndTime.difference(clock.now()).inMinutes.clamp(0, 999);
 }
 
 int mealScore({

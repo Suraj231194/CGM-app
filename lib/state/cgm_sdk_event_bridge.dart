@@ -69,20 +69,24 @@ void _handleSdkEvent(CgmSdkEvent event, AppController controller) {
         'Permissions: ${event.data['status'] ?? event.data['result'] ?? 'updated'}.',
       );
     case 'connection':
-      final connected = event.data['connected'] == true;
+      final status = event.data['status']?.toString();
+      final connected = _isConnectedEvent(event);
+      final failed = _isFailedConnectionStatus(status);
+      final message = _message(
+        event,
+        fallback: _connectionFallback(status, connected: connected),
+      );
       controller.setCgmConnectionState(
-        status: _message(
-          event,
-          fallback: connected ? 'Sensor connected' : 'Sensor disconnected',
-        ),
+        status: message,
         connected: connected,
-        connecting: false,
+        connecting: _isConnectingStatus(status),
         sensorSn: event.data['sn'] as String?,
+        error: failed ? message : null,
       );
     case 'heartbeat':
-      controller.addCgmLog(
-        'Heartbeat ${event.data['enabled'] == true ? 'started' : 'stopped'}.',
-      );
+      final status = event.data['status']?.toString().toLowerCase();
+      final started = event.data['enabled'] == true || status == 'start';
+      controller.addCgmLog('Heartbeat ${started ? 'started' : 'stopped'}.');
     case 'bindStep':
       controller.addCgmLog('Bind step: ${event.data['step'] ?? 'updated'}.');
     case 'syncProgress':
@@ -119,4 +123,46 @@ void _handleSdkEvent(CgmSdkEvent event, AppController controller) {
 
 String _message(CgmSdkEvent event, {required String fallback}) {
   return (event.data['message'] ?? event.data['error'] ?? fallback).toString();
+}
+
+bool _isConnectedEvent(CgmSdkEvent event) {
+  final connected = event.data['connected'];
+  if (connected is bool) {
+    return connected;
+  }
+
+  final status = event.data['status']?.toString().toLowerCase();
+  return status == 'connected' || status == 'reconnected';
+}
+
+bool _isConnectingStatus(String? status) {
+  final normalized = status?.toLowerCase();
+  return normalized == 'scanning' || normalized == 'connecting';
+}
+
+bool _isFailedConnectionStatus(String? status) {
+  final normalized = status?.toLowerCase();
+  return normalized == 'failed' ||
+      normalized == 'timeout' ||
+      normalized == 'reconnectfailed';
+}
+
+String _connectionFallback(String? status, {required bool connected}) {
+  switch (status?.toLowerCase()) {
+    case 'scanning':
+      return 'Scanning for sensor.';
+    case 'connected':
+      return 'Sensor connected.';
+    case 'reconnected':
+      return 'Sensor reconnected.';
+    case 'disconnected':
+      return 'Sensor disconnected.';
+    case 'timeout':
+      return 'Sensor connection timed out.';
+    case 'failed':
+    case 'reconnectfailed':
+      return 'Sensor connection failed.';
+    default:
+      return connected ? 'Sensor connected.' : 'Sensor disconnected.';
+  }
 }

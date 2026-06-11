@@ -47,6 +47,7 @@ flutter {
 
 dependencies {
     implementation(files("libs/bleHealth-release.aar"))
+    implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-ktx:1.12.0")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
 }

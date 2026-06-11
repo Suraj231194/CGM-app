@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:clock/clock.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
@@ -20,7 +21,7 @@ class ReadingHistoryScreen extends ConsumerStatefulWidget {
 }
 
 class _ReadingHistoryScreenState extends ConsumerState<ReadingHistoryScreen> {
-  DateTime _selectedDate = DateTime.now();
+  DateTime _selectedDate = clock.now();
 
   @override
   Widget build(BuildContext context) {
@@ -31,10 +32,10 @@ class _ReadingHistoryScreenState extends ConsumerState<ReadingHistoryScreen> {
             .toList()
           ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
     final minDate = patientReadings.isEmpty
-        ? _dateOnly(DateTime.now())
+        ? _dateOnly(clock.now())
         : _dateOnly(patientReadings.first.timestamp);
     final maxDate = patientReadings.isEmpty
-        ? _dateOnly(DateTime.now())
+        ? _dateOnly(clock.now())
         : _dateOnly(patientReadings.last.timestamp);
     final selectedDate = _clampedDate(_selectedDate, minDate, maxDate);
     final readingsForDate = patientReadings
@@ -84,7 +85,7 @@ class _ReadingHistoryScreenState extends ConsumerState<ReadingHistoryScreen> {
               : null,
           onToday: _canJumpToday(selectedDate, minDate, maxDate)
               ? () => setState(() {
-                  _selectedDate = _dateOnly(DateTime.now());
+                  _selectedDate = _dateOnly(clock.now());
                 })
               : null,
           onPick: () => _pickDate(context, minDate, maxDate, selectedDate),
@@ -186,7 +187,7 @@ class _ReadingHistoryScreenState extends ConsumerState<ReadingHistoryScreen> {
     DateTime minDate,
     DateTime maxDate,
   ) {
-    final today = _dateOnly(DateTime.now());
+    final today = _dateOnly(clock.now());
     return selectedDate != today &&
         !today.isBefore(minDate) &&
         !today.isAfter(maxDate);
@@ -194,7 +195,7 @@ class _ReadingHistoryScreenState extends ConsumerState<ReadingHistoryScreen> {
 }
 
 String _dateTitle(DateTime date) {
-  final today = DateTime.now();
+  final today = clock.now();
   if (date.year == today.year &&
       date.month == today.month &&
       date.day == today.day) {

@@ -6,6 +6,7 @@ import '../data/optimus_seed_data.dart';
 import '../models/optimus_models.dart';
 import '../services/cgm_sdk_service.dart';
 import '../utils/glucose_utils.dart';
+import '../utils/sensor_serial_parser.dart';
 
 class AppState {
   const AppState({
@@ -349,25 +350,55 @@ class AppController extends Notifier<AppState> {
 
   void scanAndConnectSensor({String? serialNumber, bool previewOnly = false}) {
     final now = DateTime.now();
-    final warmupEnd = now.add(const Duration(hours: 1));
+    final cleanSerial = _cleanSerial(serialNumber);
     final patient = selectedPatient;
+
+    if (!previewOnly) {
+      state = state.copyWith(
+        cgmSensorSn: cleanSerial,
+        cgmConnecting: true,
+        cgmConnected: false,
+        cgmConnectionStatus: 'Scanning for sensor',
+        clearCgmLastError: true,
+        sensors: _updateActiveSensor(
+          (sensor) => sensor.copyWith(
+            serialNumber: cleanSerial ?? sensor.serialNumber,
+            status: sensor.status == SensorStatus.inactive
+                ? SensorStatus.attached
+                : sensor.status,
+            connectionStatus: ConnectionStatus.nearby,
+          ),
+        ),
+        syncLogs: [
+          SensorSyncLog(
+            id: 'sync-${now.millisecondsSinceEpoch}',
+            sensorId: patient?.sensorId ?? 'sensor-1',
+            patientId: state.selectedPatientId,
+            event: 'Sensor scan',
+            status: 'pending',
+            timestamp: now,
+            details: 'Scanning for the sensor via the native CGM SDK.',
+          ),
+          ...state.syncLogs,
+        ],
+      );
+      return;
+    }
+
+    final warmupEnd = now.add(const Duration(hours: 1));
     state = state.copyWith(
-      cgmSensorSn: serialNumber,
-      cgmConnecting: !previewOnly,
+      cgmSensorSn: cleanSerial,
+      cgmConnecting: false,
       cgmConnected: false,
-      cgmConnectionStatus: previewOnly
-          ? 'Browser preview only'
-          : 'Scanning for sensor',
+      cgmConnectionStatus: 'Browser preview only',
       clearCgmLastError: true,
       sensors: _updateActiveSensor(
         (sensor) => sensor.copyWith(
-          serialNumber: _cleanSerial(serialNumber) ?? sensor.serialNumber,
+          serialNumber: cleanSerial ?? sensor.serialNumber,
           status: SensorStatus.warmingUp,
           warmupStartTime: now,
           warmupEndTime: warmupEnd,
-          connectionStatus: previewOnly
-              ? ConnectionStatus.nearby
-              : ConnectionStatus.connected,
+          connectionStatus: ConnectionStatus.nearby,
         ),
       ),
       syncLogs: [
@@ -378,9 +409,8 @@ class AppController extends Notifier<AppState> {
           event: 'Sensor scan',
           status: 'success',
           timestamp: now,
-          details: previewOnly
-              ? 'Browser preview started the activation flow without native sensor connection.'
-              : 'Sensor scanned, connected to phone, and 1-hour warm-up started.',
+          details:
+              'Browser preview started the activation flow without native sensor connection.',
         ),
         ...state.syncLogs,
       ],
@@ -408,18 +438,30 @@ class AppController extends Notifier<AppState> {
     String? error,
   }) {
     final isConnected = connected ?? state.cgmConnected;
+    final now = DateTime.now();
+    final cleanSerial = _cleanSerial(sensorSn);
     state = state.copyWith(
       cgmConnected: isConnected,
       cgmConnecting: connecting ?? false,
       cgmConnectionStatus: status,
-      cgmSensorSn: _cleanSerial(sensorSn) ?? state.cgmSensorSn,
+      cgmSensorSn: cleanSerial ?? state.cgmSensorSn,
       cgmLastError: error,
       clearCgmLastError: error == null,
       cgmSdkLogs: _prependLog(status),
       sensors: _updateActiveSensor(
         (sensor) => sensor.copyWith(
-          serialNumber: _cleanSerial(sensorSn) ?? sensor.serialNumber,
-          status: isConnected ? SensorStatus.active : sensor.status,
+          serialNumber: cleanSerial ?? sensor.serialNumber,
+          status: isConnected
+              ? sensor.status == SensorStatus.active
+                    ? SensorStatus.active
+                    : SensorStatus.warmingUp
+              : sensor.status,
+          warmupStartTime: isConnected
+              ? sensor.warmupStartTime ?? now
+              : sensor.warmupStartTime,
+          warmupEndTime: isConnected
+              ? sensor.warmupEndTime ?? now.add(const Duration(hours: 1))
+              : sensor.warmupEndTime,
           connectionStatus: isConnected
               ? ConnectionStatus.connected
               : sensor.connectionStatus,
@@ -624,8 +666,7 @@ class AppController extends Notifier<AppState> {
   }
 
   String? _cleanSerial(String? value) {
-    final clean = value?.trim();
-    return clean == null || clean.isEmpty ? null : clean;
+    return normalizeSensorSerial(value);
   }
 
   int _sdkGlucoseToMgDl(double value) {

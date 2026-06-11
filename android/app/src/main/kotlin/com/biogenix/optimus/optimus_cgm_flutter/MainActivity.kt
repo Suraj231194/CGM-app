@@ -1,11 +1,19 @@
 package com.biogenix.optimus.optimus_cgm_flutter
 
+import android.Manifest
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanResult
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import androidx.annotation.RequiresPermission
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.eaglenos.blehealth.callback.CgmAuthCallback
 import com.eaglenos.blehealth.callback.CgmConnectCallback
 import com.eaglenos.blehealth.callback.CgmDeviceStateInfoCallback
@@ -33,6 +41,16 @@ class MainActivity : FlutterFragmentActivity() {
         super.configureFlutterEngine(flutterEngine)
         bridge.attach(flutterEngine)
     }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        if (!bridge.onRequestPermissionsResult(requestCode, permissions, grantResults)) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        }
+    }
 }
 
 private class CgmSdkBridge(private val activity: MainActivity) {
@@ -40,6 +58,8 @@ private class CgmSdkBridge(private val activity: MainActivity) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var eventSink: EventChannel.EventSink? = null
     private var activeSn: String = ""
+    private var pendingBluetoothPermissionResult: MethodChannel.Result? = null
+    private var pendingCameraPermissionResult: MethodChannel.Result? = null
 
     fun attach(flutterEngine: FlutterEngine) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
@@ -65,11 +85,12 @@ private class CgmSdkBridge(private val activity: MainActivity) {
             "auth" -> auth(call, result)
             "checkAuthorized" -> result.success(manager.checkAuthorized())
             "requestBluetoothPermissions" -> requestBluetoothPermissions(result)
+            "requestCameraPermission" -> requestCameraPermission(result)
+            "openAppPermissionSettings" -> openAppPermissionSettings(result)
             "requestBleAndBackgroundPermissions" -> requestBleAndBackgroundPermissions(result)
             "requestIgnoreBatteryOptimization" -> requestIgnoreBatteryOptimization(result)
             "isBluetoothEnabled" -> {
-                val btManager = activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-                result.success(btManager?.adapter?.isEnabled == true)
+                result.success(isBluetoothEnabled())
             }
             "connect" -> connect(call, result)
             "disconnect" -> {
@@ -118,7 +139,52 @@ private class CgmSdkBridge(private val activity: MainActivity) {
     }
 
     private fun requestBluetoothPermissions(result: MethodChannel.Result) {
-        CgmPermissionHelper(activity).requestBluetoothPermission(permissionCallback(result))
+        val permissions = requiredBluetoothPermissions()
+        if (permissions.all(::isPermissionGranted)) {
+            sendEvent("permissions", mapOf("status" to "granted"))
+            result.success("granted")
+            return
+        }
+
+        if (pendingBluetoothPermissionResult != null) {
+            result.error("permission_request_active", "A Bluetooth permission request is already active.", null)
+            return
+        }
+
+        pendingBluetoothPermissionResult = result
+        ActivityCompat.requestPermissions(
+            activity,
+            permissions.toTypedArray(),
+            REQUEST_BLUETOOTH_PERMISSIONS,
+        )
+    }
+
+    private fun requestCameraPermission(result: MethodChannel.Result) {
+        if (isPermissionGranted(Manifest.permission.CAMERA)) {
+            result.success("granted")
+            return
+        }
+
+        if (pendingCameraPermissionResult != null) {
+            result.error("permission_request_active", "A camera permission request is already active.", null)
+            return
+        }
+
+        pendingCameraPermissionResult = result
+        ActivityCompat.requestPermissions(
+            activity,
+            arrayOf(Manifest.permission.CAMERA),
+            REQUEST_CAMERA_PERMISSION,
+        )
+    }
+
+    private fun openAppPermissionSettings(result: MethodChannel.Result) {
+        val intent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.fromParts("package", activity.packageName, null),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        activity.startActivity(intent)
+        result.success(null)
     }
 
     private fun requestBleAndBackgroundPermissions(result: MethodChannel.Result) {
@@ -148,10 +214,89 @@ private class CgmSdkBridge(private val activity: MainActivity) {
         }
     }
 
+    fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ): Boolean {
+        if (requestCode == REQUEST_CAMERA_PERMISSION) {
+            val result = pendingCameraPermissionResult ?: return true
+            pendingCameraPermissionResult = null
+
+            val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+            val status = when {
+                granted -> "granted"
+                !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA) -> "permanentlyDenied"
+                else -> "denied"
+            }
+            mainHandler.post { result.success(status) }
+            return true
+        }
+
+        if (requestCode != REQUEST_BLUETOOTH_PERMISSIONS) return false
+
+        val result = pendingBluetoothPermissionResult ?: return true
+        pendingBluetoothPermissionResult = null
+
+        val deniedPermissions = if (grantResults.isEmpty()) {
+            permissions.toList()
+        } else {
+            permissions.filterIndexed { index, _ ->
+                grantResults.getOrNull(index) != PackageManager.PERMISSION_GRANTED
+            }
+        }
+
+        val status = when {
+            deniedPermissions.isEmpty() -> "granted"
+            deniedPermissions.any { !ActivityCompat.shouldShowRequestPermissionRationale(activity, it) } -> "permanentlyDenied"
+            else -> "denied"
+        }
+
+        sendEvent("permissions", mapOf("status" to status))
+        mainHandler.post { result.success(status) }
+        return true
+    }
+
+    private fun requiredBluetoothPermissions(): List<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            listOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+            )
+        } else {
+            listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    private fun isPermissionGranted(permission: String): Boolean {
+        return ContextCompat.checkSelfPermission(activity, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasRequiredBluetoothPermissions(): Boolean {
+        return requiredBluetoothPermissions().all(::isPermissionGranted)
+    }
+
+    private fun isBluetoothEnabled(): Boolean {
+        return try {
+            val btManager = activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            btManager?.adapter?.isEnabled == true
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
     private fun connect(call: MethodCall, result: MethodChannel.Result) {
         val sn = call.argument<String>("sn")
         if (sn.isNullOrBlank()) {
             result.error("invalid_sn", "Sensor SN is required.", null)
+            return
+        }
+        if (!hasRequiredBluetoothPermissions()) {
+            result.error(
+                "bluetooth_permission_required",
+                "Bluetooth scan/connect permission is required before scanning.",
+                mapOf("status" to "permissionRequired", "sn" to sn),
+            )
             return
         }
 
@@ -206,6 +351,14 @@ private class CgmSdkBridge(private val activity: MainActivity) {
     private fun startHeartbeat(result: MethodChannel.Result) {
         if (activeSn.isBlank()) {
             result.error("missing_sn", "Connect once or pass a sensor SN before starting heartbeat.", null)
+            return
+        }
+        if (!hasRequiredBluetoothPermissions()) {
+            result.error(
+                "bluetooth_permission_required",
+                "Bluetooth scan/connect permission is required before heartbeat scanning.",
+                null,
+            )
             return
         }
 
@@ -359,6 +512,8 @@ private class CgmSdkBridge(private val activity: MainActivity) {
     companion object {
         private const val METHOD_CHANNEL = "optimus_cgm/sdk"
         private const val EVENT_CHANNEL = "optimus_cgm/sdk_events"
+        private const val REQUEST_BLUETOOTH_PERMISSIONS = 4101
+        private const val REQUEST_CAMERA_PERMISSION = 4102
     }
 }
 

@@ -5,12 +5,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../app/theme.dart';
+import '../../core/env/app_environment.dart';
 import '../../models/optimus_models.dart';
 import '../../services/cgm_sdk_service.dart';
 import '../../state/app_state.dart';
 import '../../utils/glucose_utils.dart';
+import '../../utils/sensor_serial_parser.dart';
 import '../../widgets/app_shell.dart';
 import '../../widgets/app_states.dart';
 
@@ -32,6 +35,14 @@ class _SensorActivationIntroScreenState
   final _appIdController = TextEditingController();
   final _appSecretController = TextEditingController();
   var _authorizing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final env = EnvConfig.current;
+    _appIdController.text = env.cgmSdkAppId;
+    _appSecretController.text = env.cgmSdkAppSecret;
+  }
 
   @override
   void dispose() {
@@ -172,8 +183,7 @@ class _SensorActivationIntroScreenState
     final controller = ref.read(appControllerProvider.notifier);
     try {
       final service = CgmSdkService.instance;
-      await service.requestBleAndBackgroundPermissions();
-      await service.requestIgnoreBatteryOptimization();
+      await service.requestBluetoothPermissions();
       final authorized = await service.auth(appId: appId, appSecret: appSecret);
       controller.setCgmAuthState(
         authorized: authorized,
@@ -320,6 +330,19 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
                   prefixIcon: Icon(Icons.qr_code_2_rounded),
                 ),
               ),
+              const SizedBox(height: AppSpacing.sm),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  onPressed: _connecting
+                      ? null
+                      : () => unawaited(
+                          _scanQrAndConnect(context, ref, nativeAvailable),
+                        ),
+                  icon: const Icon(Icons.qr_code_scanner_rounded),
+                  label: const Text('Scan QR code'),
+                ),
+              ),
               const SizedBox(height: AppSpacing.md),
               if (appState.cgmConnectionStatus.isNotEmpty)
                 StatusPill(
@@ -379,7 +402,9 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.radar_rounded),
-                      label: Text(_connectionFailed ? 'Retry' : 'Scan sensor'),
+                      label: Text(
+                        _connectionFailed ? 'Retry' : 'Connect sensor',
+                      ),
                     ),
                   ),
                   if (_connecting) ...[
@@ -417,20 +442,81 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
     }
   }
 
+  Future<void> _scanQrAndConnect(
+    BuildContext context,
+    WidgetRef ref,
+    bool nativeAvailable,
+  ) async {
+    final rawScan = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) => const _SensorQrScannerSheet(),
+    );
+    if (!context.mounted || rawScan == null) return;
+
+    final serial = parseSensorSerialFromQr(rawScan);
+    if (serial == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('QR scanned, but no sensor serial number was found.'),
+        ),
+      );
+      return;
+    }
+
+    _serialController.text = serial;
+    ref
+        .read(appControllerProvider.notifier)
+        .addCgmLog('QR scan captured sensor serial.');
+    await _scanAndConnect(context, ref, nativeAvailable);
+  }
+
   Future<void> _scanAndConnect(
     BuildContext context,
     WidgetRef ref,
     bool nativeAvailable,
   ) async {
-    final serial = _serialController.text.trim();
-    if (serial.isEmpty) {
+    final serial = parseSensorSerialFromQr(_serialController.text);
+    if (serial == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter the sensor serial number.')),
+        const SnackBar(
+          content: Text('Enter or scan a valid sensor serial number.'),
+        ),
       );
       return;
     }
+    _serialController.text = serial;
 
     final controller = ref.read(appControllerProvider.notifier);
+    final service = CgmSdkService.instance;
+
+    if (nativeAvailable) {
+      final appState = ref.read(appControllerProvider);
+      final authorized =
+          appState.cgmAuthorized || await service.checkAuthorized();
+      if (!authorized) {
+        controller.setCgmConnectionState(
+          status: 'SDK authorization required',
+          connected: false,
+          connecting: false,
+          sensorSn: serial,
+          error: 'Authorize the CGM SDK with appId and appSecret first.',
+        );
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Authorize the SDK before connecting the sensor.'),
+            ),
+          );
+        }
+        return;
+      }
+      if (!appState.cgmAuthorized) {
+        controller.setCgmAuthState(authorized: true);
+      }
+    }
+
     controller.scanAndConnectSensor(
       serialNumber: serial,
       previewOnly: !nativeAvailable,
@@ -447,9 +533,46 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
     });
     _startElapsedTimer();
     try {
-      final service = CgmSdkService.instance;
+      final permissionStatus = await service.requestBluetoothPermissions();
+      if (permissionStatus != 'granted') {
+        _stopElapsedTimer();
+        final message = permissionStatus == 'permanentlyDenied'
+            ? 'Bluetooth permissions are permanently denied. Enable Nearby devices in Android settings and try again.'
+            : permissionStatus == 'error'
+            ? 'Could not request Bluetooth permission. Open Android app settings, enable Nearby devices, and try again.'
+            : 'Bluetooth permissions were not granted. Please allow Nearby devices/Bluetooth permission and try again.';
+        controller.setCgmConnectionState(
+          status: 'Bluetooth permission required',
+          connected: false,
+          connecting: false,
+          sensorSn: serial,
+          error: message,
+        );
+        if (mounted) {
+          setState(() {
+            _connecting = false;
+            _connectionFailed = true;
+          });
+        }
+        if (context.mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(message)));
+          if (permissionStatus == 'permanentlyDenied' ||
+              permissionStatus == 'error') {
+            await _showPermissionSettingsDialog(
+              context,
+              title: 'Bluetooth permission required',
+              message:
+                  'Open app settings and allow Nearby devices/Bluetooth access for Optimus CGM.',
+            );
+          }
+        }
+        return;
+      }
 
-      // Check Bluetooth state before attempting connection
+      // Check Bluetooth state after permission is granted. Android 12+ requires
+      // BLUETOOTH_CONNECT even to read adapter state.
       final btEnabled = await service.isBluetoothEnabled();
       if (!btEnabled) {
         _stopElapsedTimer();
@@ -487,7 +610,6 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
         return;
       }
 
-      await service.requestBleAndBackgroundPermissions();
       final connected = await service.connect(sensorSn: serial);
 
       _stopElapsedTimer();
@@ -514,6 +636,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
         }
         if (context.mounted) unawaited(context.push('/sensor/warmup'));
       } else {
+        final latestError = ref.read(appControllerProvider).cgmLastError;
         // Connection returned false � sensor not found or timed out
         controller.setCgmConnectionState(
           status: 'Connection failed',
@@ -521,6 +644,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
           connecting: false,
           sensorSn: serial,
           error:
+              latestError ??
               'Could not connect to sensor. Ensure the sensor is nearby, powered on, and Bluetooth is enabled.',
         );
         if (mounted) setState(() => _connectionFailed = true);
@@ -553,6 +677,334 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
       _stopElapsedTimer();
       if (mounted) setState(() => _connecting = false);
     }
+  }
+
+  Future<void> _showPermissionSettingsDialog(
+    BuildContext context, {
+    required String title,
+    required String message,
+  }) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              unawaited(CgmSdkService.instance.openAppPermissionSettings());
+            },
+            child: const Text('Open settings'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SensorQrScannerSheet extends StatefulWidget {
+  const _SensorQrScannerSheet();
+
+  @override
+  State<_SensorQrScannerSheet> createState() => _SensorQrScannerSheetState();
+}
+
+class _SensorQrScannerSheetState extends State<_SensorQrScannerSheet> {
+  late final MobileScannerController _controller;
+  var _handledScan = false;
+  var _cameraReady = false;
+  var _checkingCamera = true;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = MobileScannerController(
+      detectionSpeed: DetectionSpeed.noDuplicates,
+      formats: const [BarcodeFormat.qrCode],
+      autoZoom: true,
+      autoStart: false,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_prepareCamera());
+    });
+  }
+
+  @override
+  void dispose() {
+    unawaited(_controller.dispose());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return FractionallySizedBox(
+      heightFactor: 0.86,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: const BorderRadius.vertical(
+            top: Radius.circular(AppRadii.xl),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.md,
+            AppSpacing.lg,
+            AppSpacing.lg,
+          ),
+          child: Column(
+            children: [
+              Container(
+                height: 4,
+                width: 44,
+                decoration: BoxDecoration(
+                  color: AppColors.muted.withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(AppRadii.xs),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Scan device QR',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.md),
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(AppRadii.lg),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      MobileScanner(
+                        controller: _controller,
+                        onDetect: _handleDetect,
+                        errorBuilder: (context, error) {
+                          return ColoredBox(
+                            color: Colors.black,
+                            child: Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(AppSpacing.lg),
+                                child: Text(
+                                  error.errorDetails?.message ??
+                                      error.errorCode.message,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(color: Colors.white),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      if (!_cameraReady)
+                        ColoredBox(
+                          color: Colors.black,
+                          child: Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(AppSpacing.lg),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (_checkingCamera)
+                                    const SizedBox.square(
+                                      dimension: 28,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2.5,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  else
+                                    const Icon(
+                                      Icons.no_photography_rounded,
+                                      color: Colors.white,
+                                      size: 36,
+                                    ),
+                                  const SizedBox(height: AppSpacing.md),
+                                  Text(
+                                    _errorText ?? 'Starting camera...',
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  if (!_checkingCamera) ...[
+                                    const SizedBox(height: AppSpacing.md),
+                                    FilledButton(
+                                      onPressed: () => unawaited(
+                                        CgmSdkService.instance
+                                            .openAppPermissionSettings(),
+                                      ),
+                                      child: const Text('Open settings'),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.18),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Center(
+                        child: Container(
+                          height: 232,
+                          width: 232,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(AppRadii.lg),
+                            border: Border.all(
+                              color: AppColors.onDark,
+                              width: 3,
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: AppSpacing.lg,
+                        right: AppSpacing.lg,
+                        bottom: AppSpacing.lg,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.58),
+                            borderRadius: BorderRadius.circular(AppRadii.sm),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(AppSpacing.md),
+                            child: Text(
+                              _errorText ??
+                                  'Align the QR code inside the frame.',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _cameraReady
+                          ? () => unawaited(_controller.toggleTorch())
+                          : null,
+                      icon: const Icon(Icons.flash_on_rounded),
+                      label: const Text('Torch'),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _cameraReady
+                          ? () => unawaited(_controller.switchCamera())
+                          : null,
+                      icon: const Icon(Icons.cameraswitch_rounded),
+                      label: const Text('Camera'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _prepareCamera() async {
+    final permissionStatus = await CgmSdkService.instance
+        .requestCameraPermission();
+    if (!mounted) return;
+
+    if (permissionStatus != 'granted' && permissionStatus != 'error') {
+      setState(() {
+        _checkingCamera = false;
+        _cameraReady = false;
+        _errorText = permissionStatus == 'permanentlyDenied'
+            ? 'Camera permission is permanently denied. Enable camera access in Android settings and try again.'
+            : 'Camera permission was not granted. Please allow camera access to scan the QR code.';
+      });
+      return;
+    }
+
+    try {
+      await _controller.start();
+      if (!mounted) return;
+      setState(() {
+        _checkingCamera = false;
+        _cameraReady = true;
+        _errorText = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _checkingCamera = false;
+        _cameraReady = false;
+        _errorText =
+            'Camera could not start. Close other apps using the camera and try again.';
+      });
+    }
+  }
+
+  void _handleDetect(BarcodeCapture capture) {
+    if (_handledScan) return;
+
+    String? rawValue;
+    for (final barcode in capture.barcodes) {
+      final value = barcode.rawValue?.trim();
+      if (value != null && value.isNotEmpty) {
+        rawValue = value;
+        break;
+      }
+    }
+    if (rawValue == null) return;
+
+    final serial = parseSensorSerialFromQr(rawValue);
+    if (serial == null) {
+      if (mounted) {
+        setState(
+          () => _errorText =
+              'QR detected, but no sensor serial number was found.',
+        );
+      }
+      return;
+    }
+
+    _handledScan = true;
+    unawaited(HapticFeedback.selectionClick());
+    Navigator.of(context).pop(rawValue);
   }
 }
 

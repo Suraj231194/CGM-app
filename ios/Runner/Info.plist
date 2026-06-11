@@ -30,6 +30,8 @@
 	<string>Optimus CGM uses Bluetooth to connect to your glucose sensor and receive readings.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Optimus CGM uses Bluetooth to connect to your glucose sensor and receive readings.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Optimus CGM uses the camera to scan your sensor QR code.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

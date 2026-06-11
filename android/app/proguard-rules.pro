@@ -13,7 +13,15 @@
 # BLE / CGM SDK
 -keep class com.biogenix.optimus.** { *; }
 -keep class com.stayoncgm.** { *; }
+-keep class com.eaglenos.** { *; }
 -keep class android.bluetooth.** { *; }
+
+# The CGM AAR also ships obfuscated package roots without consumer rules.
+-keep class a.** { *; }
+-keep class b.** { *; }
+-keep class c.** { *; }
+-keep class d.** { *; }
+-dontwarn com.eaglenos.**
 
 # Gson (if used by SDK)
 -keepattributes Signature
