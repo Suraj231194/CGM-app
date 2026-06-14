@@ -139,24 +139,7 @@ private class CgmSdkBridge(private val activity: MainActivity) {
     }
 
     private fun requestBluetoothPermissions(result: MethodChannel.Result) {
-        val permissions = requiredBluetoothPermissions()
-        if (permissions.all(::isPermissionGranted)) {
-            sendEvent("permissions", mapOf("status" to "granted"))
-            result.success("granted")
-            return
-        }
-
-        if (pendingBluetoothPermissionResult != null) {
-            result.error("permission_request_active", "A Bluetooth permission request is already active.", null)
-            return
-        }
-
-        pendingBluetoothPermissionResult = result
-        ActivityCompat.requestPermissions(
-            activity,
-            permissions.toTypedArray(),
-            REQUEST_BLUETOOTH_PERMISSIONS,
-        )
+        CgmPermissionHelper(activity).requestBluetoothPermission(permissionCallback(result))
     }
 
     private fun requestCameraPermission(result: MethodChannel.Result) {

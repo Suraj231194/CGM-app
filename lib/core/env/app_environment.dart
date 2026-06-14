@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 /// Environment configuration for the application.
 ///
 /// Use flavors or compile-time constants to switch between environments.
@@ -7,20 +9,43 @@ class EnvConfig {
   const EnvConfig._({
     required this.environment,
     required this.apiBaseUrl,
-    required this.cgmSdkAppId,
-    required this.cgmSdkAppSecret,
+    required String cgmSdkAppId,
+    required String cgmSdkAppSecret,
     required this.enableLogging,
     required this.connectionTimeoutSeconds,
     required this.maxRetryAttempts,
-  });
+  }) : _cgmSdkAppId = cgmSdkAppId,
+       _cgmSdkAppSecret = cgmSdkAppSecret;
 
   final AppEnvironment environment;
   final String apiBaseUrl;
-  final String cgmSdkAppId;
-  final String cgmSdkAppSecret;
+  final String _cgmSdkAppId;
+  final String _cgmSdkAppSecret;
   final bool enableLogging;
   final int connectionTimeoutSeconds;
   final int maxRetryAttempts;
+
+  String get cgmSdkAppId {
+    if (_cgmSdkAppId.isNotEmpty) return _cgmSdkAppId;
+    if (kIsWeb) return '';
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return '505285';
+    } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+      return '642434';
+    }
+    return '';
+  }
+
+  String get cgmSdkAppSecret {
+    if (_cgmSdkAppSecret.isNotEmpty) return _cgmSdkAppSecret;
+    if (kIsWeb) return '';
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return 'a6BgbGLjiseZndCgzq6SdLQlbnJx0UCb';
+    } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+      return 'wtrWYS8bnRTxssyNwbbwsyNYccpYlkP8';
+    }
+    return '';
+  }
 
   static const development = EnvConfig._(
     environment: AppEnvironment.development,

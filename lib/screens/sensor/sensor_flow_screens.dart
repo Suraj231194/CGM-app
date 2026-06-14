@@ -32,23 +32,29 @@ class SensorActivationIntroScreen extends ConsumerStatefulWidget {
 
 class _SensorActivationIntroScreenState
     extends ConsumerState<SensorActivationIntroScreen> {
-  final _appIdController = TextEditingController();
-  final _appSecretController = TextEditingController();
   var _authorizing = false;
 
   @override
   void initState() {
     super.initState();
-    final env = EnvConfig.current;
-    _appIdController.text = env.cgmSdkAppId;
-    _appSecretController.text = env.cgmSdkAppSecret;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_isNativeSdkAvailable) {
+        _autoAuthorizeIfNeeded();
+      }
+    });
   }
 
-  @override
-  void dispose() {
-    _appIdController.dispose();
-    _appSecretController.dispose();
-    super.dispose();
+  Future<void> _autoAuthorizeIfNeeded() async {
+    final appState = ref.read(appControllerProvider);
+    final service = CgmSdkService.instance;
+    final isAuthorized = appState.cgmAuthorized || await service.checkAuthorized();
+    if (isAuthorized) {
+      if (!appState.cgmAuthorized) {
+        ref.read(appControllerProvider.notifier).setCgmAuthState(authorized: true);
+      }
+      return;
+    }
+    await _authorizeSdk(context, ref);
   }
 
   @override
@@ -89,42 +95,65 @@ class _SensorActivationIntroScreenState
                 ).textTheme.bodyMedium?.copyWith(color: AppColors.muted),
               ),
               const SizedBox(height: AppSpacing.lg),
-              TextField(
-                controller: _appIdController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(
-                  labelText: 'Provider appId',
-                  prefixIcon: Icon(Icons.key_rounded),
+              
+              // SDK Status Card
+              Container(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                decoration: BoxDecoration(
+                  color: appState.cgmAuthorized 
+                      ? AppColors.primarySoft 
+                      : AppColors.dangerSoft,
+                  borderRadius: BorderRadius.circular(AppBorderRadius.md),
                 ),
-              ),
-              const SizedBox(height: AppSpacing.md),
-              TextField(
-                controller: _appSecretController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: 'Provider appSecret',
-                  prefixIcon: Icon(Icons.lock_outline_rounded),
-                ),
-              ),
-              const SizedBox(height: AppSpacing.md),
-              FilledButton.tonalIcon(
-                onPressed: nativeAvailable && !_authorizing
-                    ? () => _authorizeSdk(context, ref)
-                    : null,
-                icon: _authorizing
-                    ? const SizedBox.square(
-                        dimension: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Icon(
-                        appState.cgmAuthorized
-                            ? Icons.verified_rounded
-                            : Icons.security_rounded,
+                child: Row(
+                  children: [
+                    Icon(
+                      appState.cgmAuthorized 
+                          ? Icons.verified_user_rounded 
+                          : Icons.gpp_bad_rounded,
+                      color: appState.cgmAuthorized 
+                          ? AppColors.primary 
+                          : AppColors.danger,
+                    ),
+                    const SizedBox(width: AppSpacing.md),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            appState.cgmAuthorized ? 'SDK Authenticated' : 'SDK Needs Authentication',
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: appState.cgmAuthorized ? AppColors.primary : AppColors.danger,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            appState.cgmAuthorized 
+                                ? 'Connected to Eaglenos service using config file credentials.'
+                                : 'Failed to authenticate SDK. Please verify config file credentials.',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppColors.muted,
+                            ),
+                          ),
+                        ],
                       ),
-                label: Text(
-                  appState.cgmAuthorized ? 'SDK authorized' : 'Authorize SDK',
+                    ),
+                    if (!appState.cgmAuthorized && nativeAvailable)
+                      IconButton(
+                        onPressed: _authorizing ? null : () => _authorizeSdk(context, ref),
+                        icon: _authorizing 
+                            ? const SizedBox.square(
+                                dimension: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.refresh_rounded),
+                        color: AppColors.danger,
+                      ),
+                  ],
                 ),
               ),
+              
               if (!nativeAvailable) ...[
                 const SizedBox(height: AppSpacing.sm),
                 Text(
@@ -170,11 +199,13 @@ class _SensorActivationIntroScreenState
   }
 
   Future<void> _authorizeSdk(BuildContext context, WidgetRef ref) async {
-    final appId = _appIdController.text.trim();
-    final appSecret = _appSecretController.text.trim();
+    final env = EnvConfig.current;
+    final appId = env.cgmSdkAppId;
+    final appSecret = env.cgmSdkAppSecret;
     if (appId.isEmpty || appSecret.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter provider appId and appSecret.')),
+      ref.read(appControllerProvider.notifier).setCgmAuthState(
+        authorized: false,
+        error: 'SDK appId or appSecret is missing from configuration.',
       );
       return;
     }
@@ -726,7 +757,6 @@ class _SensorQrScannerSheetState extends State<_SensorQrScannerSheet> {
     super.initState();
     _controller = MobileScannerController(
       detectionSpeed: DetectionSpeed.noDuplicates,
-      formats: const [BarcodeFormat.qrCode],
       autoZoom: true,
       autoStart: false,
     );

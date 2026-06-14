@@ -37,6 +37,31 @@ String? parseSensorSerialFromQr(String rawValue) {
   final raw = rawValue.trim();
   if (raw.isEmpty) return null;
 
+  // 1. Direct search for known model prefixes anywhere in the raw text (extremely robust for custom/embedded formats)
+  for (final prefix in _modelPrefixByGtin.values) {
+    // Try word boundary first
+    final pattern = RegExp(
+      '\\b(${RegExp.escape(prefix)}[A-Za-z0-9_-]{4,30})\\b',
+      caseSensitive: false,
+    );
+    final match = pattern.firstMatch(raw);
+    if (match != null) {
+      final serial = normalizeSensorSerial(match.group(1));
+      if (serial != null) return serial;
+    }
+
+    // Try without word boundary (e.g. compact GS1 data without separators)
+    final patternNoBoundary = RegExp(
+      '(${RegExp.escape(prefix)}[A-Za-z0-9_-]{4,30})',
+      caseSensitive: false,
+    );
+    final matchNoBoundary = patternNoBoundary.firstMatch(raw);
+    if (matchNoBoundary != null) {
+      final serial = normalizeSensorSerial(matchNoBoundary.group(1));
+      if (serial != null) return serial;
+    }
+  }
+
   final fromJson = _serialFromJson(raw);
   if (fromJson != null) return fromJson;
 
@@ -159,26 +184,51 @@ String? _serialFromGs1(String raw) {
   final explicit = _serialFromParenthesizedGs1(raw);
   if (explicit != null) return explicit;
 
-  final compact = raw
-      .replaceAll(RegExp(r'^\][A-Za-z0-9]{2}'), '')
-      .replaceAll(String.fromCharCode(29), '')
-      .replaceAll(RegExp(r'[\s()]+'), '');
+  var clean = raw.trim();
+  clean = clean.replaceAll(RegExp(r'^\][A-Za-z0-9]{2}'), '');
 
-  final gtinMatch = RegExp(r'01(\d{14})').firstMatch(compact);
+  final gtinMatch = RegExp(r'(?:^|[\u001d])01(\d{14})').firstMatch(clean);
   if (gtinMatch == null) return null;
 
-  var cursor = gtinMatch.end;
-  while (cursor + 2 <= compact.length) {
-    final ai = compact.substring(cursor, cursor + 2);
-    if (ai == '11' || ai == '17') {
-      cursor += 8;
-      continue;
+  final gtin = gtinMatch.group(1)!;
+  final postGtin = clean.substring(gtinMatch.end);
+  final segments = postGtin.split(String.fromCharCode(29));
+
+  for (final segment in segments) {
+    var cursor = 0;
+    while (cursor < segment.length) {
+      if (cursor + 2 > segment.length) break;
+      final ai = segment.substring(cursor, cursor + 2);
+      if (ai == '11' || ai == '17') {
+        cursor += 8; // AI (2) + Date (6)
+        continue;
+      }
+      if (ai == '21') {
+        final serialVal = segment.substring(cursor + 2);
+        final serial = normalizeSensorSerial(serialVal);
+        if (serial != null) {
+          return _composeGtinSerial(gtin, serial);
+        }
+        break;
+      }
+      if (ai == '10') {
+        // Lot number is variable length.
+        break;
+      }
+      cursor++;
     }
-    if (ai == '21') {
-      final serial = normalizeSensorSerial(compact.substring(cursor + 2));
-      return _composeGtinSerial(gtinMatch.group(1), serial);
+  }
+
+  // Fallback: search for "21" followed by alphanumeric characters at the end of the string
+  // or before a GS separator.
+  final fallbackMatch = RegExp(
+    r'(?:^|[\u001d]|17\d{6}|11\d{6}|10[A-Za-z0-9_-]+)21([A-Za-z0-9]{4,30})(?:$|[\u001d])',
+  ).firstMatch(clean);
+  if (fallbackMatch != null) {
+    final serial = normalizeSensorSerial(fallbackMatch.group(1));
+    if (serial != null) {
+      return _composeGtinSerial(gtin, serial);
     }
-    break;
   }
 
   return null;

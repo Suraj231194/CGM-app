@@ -47,6 +47,24 @@ void main() {
       expect(parseSensorSerialFromQr('SN D115W66200387'), 'D115W66200387');
     });
 
+    test('extracts serial from compact GS1 with Lot number and GS character', () {
+      expect(
+        parseSensorSerialFromQr(
+          '01069750225375101727042810LOT12345\u001d2166200387',
+        ),
+        'D115W66200387',
+      );
+    });
+
+    test('extracts serial directly when model prefix is embedded in custom URLs', () {
+      expect(
+        parseSensorSerialFromQr(
+          'https://cgm.eaglenos.com/activate?device=D115W66200387&user=123',
+        ),
+        'D115W66200387',
+      );
+    });
+
     test('uses the last serial-like URL path segment', () {
       expect(
         parseSensorSerialFromQr('https://example.test/sensor/CGM778899'),
