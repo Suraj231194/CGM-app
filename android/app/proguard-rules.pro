@@ -10,6 +10,20 @@
 -keep class com.google.firebase.** { *; }
 -keep class com.google.android.gms.** { *; }
 
+# ML Kit / Mobile Scanner barcode scanning.
+# Release minification can otherwise damage bundled barcode internals and
+# surface obfuscated null-reference errors from packages such as u4/q4.
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_barcode.** { *; }
+-keep class com.google.android.gms.internal.mlkit_vision_barcode_bundled.** { *; }
+-keep class com.google.android.libraries.barhopper.** { *; }
+-keep class u4.** { *; }
+-keep class q4.** { *; }
+-dontwarn com.google.mlkit.**
+-dontwarn com.google.android.gms.internal.mlkit_vision_barcode.**
+-dontwarn com.google.android.gms.internal.mlkit_vision_barcode_bundled.**
+-dontwarn com.google.android.libraries.barhopper.**
+
 # BLE / CGM SDK
 -keep class com.biogenix.optimus.** { *; }
 -keep class com.stayoncgm.** { *; }

@@ -47,10 +47,14 @@ class _SensorActivationIntroScreenState
   Future<void> _autoAuthorizeIfNeeded() async {
     final appState = ref.read(appControllerProvider);
     final service = CgmSdkService.instance;
-    final isAuthorized = appState.cgmAuthorized || await service.checkAuthorized();
+    final isAuthorized =
+        appState.cgmAuthorized || await service.checkAuthorized();
+    if (!mounted) return;
     if (isAuthorized) {
       if (!appState.cgmAuthorized) {
-        ref.read(appControllerProvider.notifier).setCgmAuthState(authorized: true);
+        ref
+            .read(appControllerProvider.notifier)
+            .setCgmAuthState(authorized: true);
       }
       return;
     }
@@ -95,24 +99,24 @@ class _SensorActivationIntroScreenState
                 ).textTheme.bodyMedium?.copyWith(color: AppColors.muted),
               ),
               const SizedBox(height: AppSpacing.lg),
-              
+
               // SDK Status Card
               Container(
                 padding: const EdgeInsets.all(AppSpacing.md),
                 decoration: BoxDecoration(
-                  color: appState.cgmAuthorized 
-                      ? AppColors.primarySoft 
+                  color: appState.cgmAuthorized
+                      ? AppColors.primarySoft
                       : AppColors.dangerSoft,
-                  borderRadius: BorderRadius.circular(AppBorderRadius.md),
+                  borderRadius: BorderRadius.circular(AppRadii.md),
                 ),
                 child: Row(
                   children: [
                     Icon(
-                      appState.cgmAuthorized 
-                          ? Icons.verified_user_rounded 
+                      appState.cgmAuthorized
+                          ? Icons.verified_user_rounded
                           : Icons.gpp_bad_rounded,
-                      color: appState.cgmAuthorized 
-                          ? AppColors.primary 
+                      color: appState.cgmAuthorized
+                          ? AppColors.primary
                           : AppColors.danger,
                     ),
                     const SizedBox(width: AppSpacing.md),
@@ -121,31 +125,39 @@ class _SensorActivationIntroScreenState
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            appState.cgmAuthorized ? 'SDK Authenticated' : 'SDK Needs Authentication',
-                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: appState.cgmAuthorized ? AppColors.primary : AppColors.danger,
-                            ),
+                            appState.cgmAuthorized
+                                ? 'SDK Authenticated'
+                                : 'SDK Needs Authentication',
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  color: appState.cgmAuthorized
+                                      ? AppColors.primary
+                                      : AppColors.danger,
+                                ),
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            appState.cgmAuthorized 
+                            appState.cgmAuthorized
                                 ? 'Connected to Eaglenos service using config file credentials.'
                                 : 'Failed to authenticate SDK. Please verify config file credentials.',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: AppColors.muted,
-                            ),
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: AppColors.muted),
                           ),
                         ],
                       ),
                     ),
                     if (!appState.cgmAuthorized && nativeAvailable)
                       IconButton(
-                        onPressed: _authorizing ? null : () => _authorizeSdk(context, ref),
-                        icon: _authorizing 
+                        onPressed: _authorizing
+                            ? null
+                            : () => _authorizeSdk(context, ref),
+                        icon: _authorizing
                             ? const SizedBox.square(
                                 dimension: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Icon(Icons.refresh_rounded),
                         color: AppColors.danger,
@@ -153,7 +165,7 @@ class _SensorActivationIntroScreenState
                   ],
                 ),
               ),
-              
+
               if (!nativeAvailable) ...[
                 const SizedBox(height: AppSpacing.sm),
                 Text(
@@ -203,10 +215,12 @@ class _SensorActivationIntroScreenState
     final appId = env.cgmSdkAppId;
     final appSecret = env.cgmSdkAppSecret;
     if (appId.isEmpty || appSecret.isEmpty) {
-      ref.read(appControllerProvider.notifier).setCgmAuthState(
-        authorized: false,
-        error: 'SDK appId or appSecret is missing from configuration.',
-      );
+      ref
+          .read(appControllerProvider.notifier)
+          .setCgmAuthState(
+            authorized: false,
+            error: 'SDK appId or appSecret is missing from configuration.',
+          );
       return;
     }
 
@@ -757,7 +771,7 @@ class _SensorQrScannerSheetState extends State<_SensorQrScannerSheet> {
     super.initState();
     _controller = MobileScannerController(
       detectionSpeed: DetectionSpeed.noDuplicates,
-      autoZoom: true,
+      formats: const [BarcodeFormat.qrCode],
       autoStart: false,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
