@@ -122,7 +122,112 @@ void _handleSdkEvent(CgmSdkEvent event, AppController controller) {
 }
 
 String _message(CgmSdkEvent event, {required String fallback}) {
-  return (event.data['message'] ?? event.data['error'] ?? fallback).toString();
+  final mappedMessage =
+      _sdkCodeMessage(event.data['code']) ??
+      _sdkNameMessage(event.data['name']);
+  final rawMessage = event.data['message'] ?? event.data['error'];
+
+  if (rawMessage == null) return mappedMessage ?? fallback;
+
+  final message = rawMessage.toString().trim();
+  if (message.isEmpty) return mappedMessage ?? fallback;
+
+  if (mappedMessage != null && _shouldReplaceSdkMessage(message)) {
+    return mappedMessage;
+  }
+
+  return message;
+}
+
+String? _sdkCodeMessage(Object? code) {
+  final value = code is num
+      ? code.toInt()
+      : int.tryParse(code?.toString() ?? '');
+  return switch (value) {
+    400001 => 'Network error while contacting the CGM service.',
+    400002 => 'The CGM service response could not be parsed.',
+    400003 => 'The CGM service returned invalid data.',
+    400004 => 'A required CGM SDK parameter is missing.',
+    400005 => 'CGM SDK signature verification failed.',
+    400006 => 'The requested CGM record was not found.',
+    400007 => 'CGM SDK token was not found.',
+    400008 => 'CGM SDK token expired. Please authorize again.',
+    500001 => 'Sensor serial number is missing.',
+    500002 =>
+      'Sensor not found. Keep the phone close to the sensor and try again.',
+    500003 => 'Sensor has expired.',
+    500004 => 'Bluetooth connection failed.',
+    500005 => 'Bluetooth service discovery failed.',
+    500006 => 'Bluetooth characteristic discovery failed.',
+    500007 => 'Bluetooth communication failed.',
+    _ => null,
+  };
+}
+
+String? _sdkNameMessage(Object? name) {
+  final value = name?.toString().toLowerCase();
+  if (value == null || value.isEmpty) return null;
+
+  if (value.contains('nodevice')) {
+    return 'Sensor not found. Keep the phone close to the sensor and try again.';
+  }
+  if (value.contains('expired')) return 'Sensor has expired.';
+  if (value.contains('sn')) return 'Sensor serial number is missing.';
+  if (value.contains('discoverservices')) {
+    return 'Bluetooth service discovery failed.';
+  }
+  if (value.contains('discovercharacteristics')) {
+    return 'Bluetooth characteristic discovery failed.';
+  }
+  if (value.contains('ble') || value.contains('connect')) {
+    return 'Bluetooth connection failed.';
+  }
+  if (value.contains('token')) {
+    return 'CGM SDK token error. Please authorize again.';
+  }
+  if (value.contains('sign')) {
+    return 'CGM SDK signature verification failed.';
+  }
+  if (value.contains('network') || value.contains('api')) {
+    return 'Network error while contacting the CGM service.';
+  }
+  if (value.contains('param')) {
+    return 'A required CGM SDK parameter is missing.';
+  }
+  return null;
+}
+
+bool _shouldReplaceSdkMessage(String message) {
+  final lower = message.toLowerCase();
+  return _containsCjk(message) ||
+      _looksMojibake(message) ||
+      lower.contains('operation couldn') ||
+      lower.contains('operation could not') ||
+      lower.contains('localized description');
+}
+
+bool _containsCjk(String value) {
+  return value.runes.any((codePoint) {
+    return (codePoint >= 0x3400 && codePoint <= 0x4DBF) ||
+        (codePoint >= 0x4E00 && codePoint <= 0x9FFF) ||
+        (codePoint >= 0xF900 && codePoint <= 0xFAFF);
+  });
+}
+
+bool _looksMojibake(String value) {
+  const markerCodePoints = {
+    0x00C2, // Latin capital A with circumflex.
+    0x00C3, // Latin capital A with tilde.
+    0x00E5, // Latin small a with ring above.
+    0x00E6, // Latin small ae.
+    0x00E7, // Latin small c with cedilla.
+    0x00E8, // Latin small e with grave.
+    0x00EF, // Latin small i with diaeresis.
+    0x0153, // Latin small oe.
+    0x20AC, // Euro sign, common in mojibake fragments.
+    0xFFFD, // Replacement character.
+  };
+  return value.runes.any(markerCodePoints.contains);
 }
 
 bool _isConnectedEvent(CgmSdkEvent event) {

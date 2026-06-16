@@ -1,7 +1,10 @@
+import AVFoundation
+import AVFoundation
 import CoreBluetooth
 import Flutter
 import Foundation
 import StayOnFramework
+import UIKit
 
 final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
   static let shared = CgmSdkIosBridge()
@@ -14,6 +17,7 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
   private var cachedReadings: [[String: Any]] = []
   private var methodChannel: FlutterMethodChannel?
   private var eventChannel: FlutterEventChannel?
+  private lazy var centralManager = CBCentralManager(delegate: nil, queue: nil, options: [CBCentralManagerOptionShowPowerAlertKey: false])
 
   private override init() {
     super.init()
@@ -87,6 +91,31 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
       result(authStatus)
     case "requestIgnoreBatteryOptimization":
       result("not-applicable")
+    case "requestCameraPermission":
+      let cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
+      switch cameraStatus {
+      case .authorized:
+        result("granted")
+      case .notDetermined:
+        AVCaptureDevice.requestAccess(for: .video) { granted in
+          DispatchQueue.main.async {
+            result(granted ? "granted" : "denied")
+          }
+        }
+      case .denied:
+        result("permanentlyDenied")
+      case .restricted:
+        result("denied")
+      @unknown default:
+        result("error")
+      }
+    case "openAppPermissionSettings":
+      if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
+        DispatchQueue.main.async {
+          UIApplication.shared.open(settingsUrl)
+        }
+      }
+      result(nil)
     case "connect":
       connect(args: args, result: result)
     case "disconnect":
@@ -101,11 +130,7 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
     case "isConnected":
       result(connected)
     case "isBluetoothEnabled":
-      if #available(iOS 13.1, *) {
-        result(CBManager.authorization == .allowedAlways || CBManager.authorization == .notDetermined)
-      } else {
-        result(true)
-      }
+      result(centralManager.state == .poweredOn)
     case "getHistoryFromIndexStart":
       let start = intValue(args["indexStart"])
       SOFCGMManager.shared.getHistoryData(package_num: start)
@@ -219,7 +244,7 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
         self.pendingConnectResult = nil
         DispatchQueue.main.async { pending(false) }
       }
-    }
+    } cgmConProcessState: { [weak self] state in
       self?.emit("bindStep", [
         "step": state.rawValue,
         "message": self?.connectionProcessText(state) ?? "Connection step updated.",

@@ -22,6 +22,29 @@ bool get _isNativeSdkAvailable =>
     (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS);
 
+bool _canContinueWithPermissionStatus(String status) {
+  return status == 'granted' ||
+      status == 'ios-managed' ||
+      status == 'not-applicable';
+}
+
+String _bluetoothPermissionMessage(String status) {
+  final platformSettings = defaultTargetPlatform == TargetPlatform.iOS
+      ? 'iOS Settings'
+      : 'Android settings';
+  final permissionName = defaultTargetPlatform == TargetPlatform.iOS
+      ? 'Bluetooth access'
+      : 'Nearby devices/Bluetooth access';
+
+  if (status == 'permanentlyDenied') {
+    return 'Bluetooth permissions are permanently denied. Enable $permissionName in $platformSettings and try again.';
+  }
+  if (status == 'error') {
+    return 'Could not request Bluetooth permission. Open $platformSettings, enable $permissionName, and try again.';
+  }
+  return 'Bluetooth permissions were not granted. Please allow $permissionName and try again.';
+}
+
 class SensorActivationIntroScreen extends ConsumerStatefulWidget {
   const SensorActivationIntroScreen({super.key});
 
@@ -385,7 +408,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
                           _scanQrAndConnect(context, ref, nativeAvailable),
                         ),
                   icon: const Icon(Icons.qr_code_scanner_rounded),
-                  label: const Text('Scan QR code'),
+                  label: const Text('Scan sensor code'),
                 ),
               ),
               const SizedBox(height: AppSpacing.md),
@@ -418,7 +441,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
               if (_connecting) ...[
                 const SizedBox(height: AppSpacing.md),
                 Text(
-                  'Searching for sensor� ${_elapsedSeconds}s / 30s',
+                  'Searching for sensor... ${_elapsedSeconds}s / 30s',
                   style: Theme.of(
                     context,
                   ).textTheme.bodySmall?.copyWith(color: AppColors.muted),
@@ -504,7 +527,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
     if (serial == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('QR scanned, but no sensor serial number was found.'),
+          content: Text('Code scanned, but no sensor serial number was found.'),
         ),
       );
       return;
@@ -579,13 +602,9 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
     _startElapsedTimer();
     try {
       final permissionStatus = await service.requestBluetoothPermissions();
-      if (permissionStatus != 'granted') {
+      if (!_canContinueWithPermissionStatus(permissionStatus)) {
         _stopElapsedTimer();
-        final message = permissionStatus == 'permanentlyDenied'
-            ? 'Bluetooth permissions are permanently denied. Enable Nearby devices in Android settings and try again.'
-            : permissionStatus == 'error'
-            ? 'Could not request Bluetooth permission. Open Android app settings, enable Nearby devices, and try again.'
-            : 'Bluetooth permissions were not granted. Please allow Nearby devices/Bluetooth permission and try again.';
+        final message = _bluetoothPermissionMessage(permissionStatus);
         controller.setCgmConnectionState(
           status: 'Bluetooth permission required',
           connected: false,
@@ -609,7 +628,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
               context,
               title: 'Bluetooth permission required',
               message:
-                  'Open app settings and allow Nearby devices/Bluetooth access for Optimus CGM.',
+                  'Open app settings and allow Bluetooth access for Optimus CGM.',
             );
           }
         }
@@ -682,7 +701,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
         if (context.mounted) unawaited(context.push('/sensor/warmup'));
       } else {
         final latestError = ref.read(appControllerProvider).cgmLastError;
-        // Connection returned false � sensor not found or timed out
+        // Connection returned false: sensor not found or timed out.
         controller.setCgmConnectionState(
           status: 'Connection failed',
           connected: false,
@@ -771,18 +790,36 @@ class _SensorQrScannerSheetState extends State<_SensorQrScannerSheet> {
     super.initState();
     _controller = MobileScannerController(
       detectionSpeed: DetectionSpeed.noDuplicates,
-      formats: const [BarcodeFormat.qrCode],
-      autoStart: false,
+      // CGM packaging commonly uses GS1 DataMatrix rather than QR.
+      // Leaving formats unset lets ML Kit detect any supported barcode.
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_prepareCamera());
-    });
+    _controller.addListener(_onControllerStateChanged);
   }
 
   @override
   void dispose() {
+    _controller.removeListener(_onControllerStateChanged);
     unawaited(_controller.dispose());
     super.dispose();
+  }
+
+  void _onControllerStateChanged() {
+    if (!mounted) return;
+    final state = _controller.value;
+    if (state.isRunning && !_cameraReady) {
+      setState(() {
+        _checkingCamera = false;
+        _cameraReady = true;
+        _errorText = null;
+      });
+    } else if (state.error != null && _checkingCamera) {
+      setState(() {
+        _checkingCamera = false;
+        _cameraReady = false;
+        _errorText = state.error!.errorDetails?.message ??
+            'Camera could not start. Ensure camera permission is granted and try again.';
+      });
+    }
   }
 
   @override
@@ -820,7 +857,7 @@ class _SensorQrScannerSheetState extends State<_SensorQrScannerSheet> {
                 children: [
                   Expanded(
                     child: Text(
-                      'Scan device QR',
+                      'Scan sensor code',
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.w900,
                       ),
@@ -942,7 +979,7 @@ class _SensorQrScannerSheetState extends State<_SensorQrScannerSheet> {
                             padding: const EdgeInsets.all(AppSpacing.md),
                             child: Text(
                               _errorText ??
-                                  'Align the QR code inside the frame.',
+                                  'Align the sensor code inside the frame.',
                               textAlign: TextAlign.center,
                               style: const TextStyle(
                                 color: Colors.white,
@@ -987,41 +1024,6 @@ class _SensorQrScannerSheetState extends State<_SensorQrScannerSheet> {
     );
   }
 
-  Future<void> _prepareCamera() async {
-    final permissionStatus = await CgmSdkService.instance
-        .requestCameraPermission();
-    if (!mounted) return;
-
-    if (permissionStatus != 'granted' && permissionStatus != 'error') {
-      setState(() {
-        _checkingCamera = false;
-        _cameraReady = false;
-        _errorText = permissionStatus == 'permanentlyDenied'
-            ? 'Camera permission is permanently denied. Enable camera access in Android settings and try again.'
-            : 'Camera permission was not granted. Please allow camera access to scan the QR code.';
-      });
-      return;
-    }
-
-    try {
-      await _controller.start();
-      if (!mounted) return;
-      setState(() {
-        _checkingCamera = false;
-        _cameraReady = true;
-        _errorText = null;
-      });
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _checkingCamera = false;
-        _cameraReady = false;
-        _errorText =
-            'Camera could not start. Close other apps using the camera and try again.';
-      });
-    }
-  }
-
   void _handleDetect(BarcodeCapture capture) {
     if (_handledScan) return;
 
@@ -1040,7 +1042,7 @@ class _SensorQrScannerSheetState extends State<_SensorQrScannerSheet> {
       if (mounted) {
         setState(
           () => _errorText =
-              'QR detected, but no sensor serial number was found.',
+              'Code detected, but no sensor serial number was found.',
         );
       }
       return;

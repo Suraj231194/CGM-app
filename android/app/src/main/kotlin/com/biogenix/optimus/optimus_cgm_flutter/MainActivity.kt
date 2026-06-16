@@ -60,6 +60,7 @@ private class CgmSdkBridge(private val activity: MainActivity) {
     private var activeSn: String = ""
     private var pendingBluetoothPermissionResult: MethodChannel.Result? = null
     private var pendingCameraPermissionResult: MethodChannel.Result? = null
+    private var connectTimeoutRunnable: Runnable? = null
 
     fun attach(flutterEngine: FlutterEngine) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
@@ -94,6 +95,8 @@ private class CgmSdkBridge(private val activity: MainActivity) {
             }
             "connect" -> connect(call, result)
             "disconnect" -> {
+                connectTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+                connectTimeoutRunnable = null
                 manager.disconnectDevice()
                 manager.stopScanBluetooth()
                 result.success(null)
@@ -315,11 +318,13 @@ private class CgmSdkBridge(private val activity: MainActivity) {
         val timeoutRunnable = Runnable {
             if (!resultSent) {
                 resultSent = true
+                connectTimeoutRunnable = null
                 manager.stopScanBluetooth()
                 sendEvent("connection", mapOf("status" to "timeout", "sn" to sn, "message" to "Connection timed out. Ensure sensor is nearby."))
                 result.error("connect_timeout", "Sensor connection timed out after 30 seconds.", null)
             }
         }
+        connectTimeoutRunnable = timeoutRunnable
         mainHandler.postDelayed(timeoutRunnable, 30_000L)
 
         manager.connectTargetAndStartScan(
@@ -332,6 +337,7 @@ private class CgmSdkBridge(private val activity: MainActivity) {
 
                 override fun onSuccess() {
                     mainHandler.removeCallbacks(timeoutRunnable)
+                    connectTimeoutRunnable = null
                     if (!resultSent) {
                         resultSent = true
                         manager.stopScanBluetooth()
@@ -342,6 +348,7 @@ private class CgmSdkBridge(private val activity: MainActivity) {
 
                 override fun onFailure(error: CgmError?) {
                     mainHandler.removeCallbacks(timeoutRunnable)
+                    connectTimeoutRunnable = null
                     if (!resultSent) {
                         resultSent = true
                         val payload = error.toMap() + mapOf("status" to "failed", "sn" to activeSn)

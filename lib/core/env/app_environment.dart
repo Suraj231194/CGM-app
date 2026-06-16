@@ -9,13 +9,12 @@ class EnvConfig {
   const EnvConfig._({
     required this.environment,
     required this.apiBaseUrl,
-    required String cgmSdkAppId,
-    required String cgmSdkAppSecret,
+    required this._cgmSdkAppId,
+    required this._cgmSdkAppSecret,
     required this.enableLogging,
     required this.connectionTimeoutSeconds,
     required this.maxRetryAttempts,
-  }) : _cgmSdkAppId = cgmSdkAppId,
-       _cgmSdkAppSecret = cgmSdkAppSecret;
+  });
 
   final AppEnvironment environment;
   final String apiBaseUrl;
