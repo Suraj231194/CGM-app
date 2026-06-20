@@ -18,8 +18,8 @@ class OfflineBanner extends ConsumerWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(
-        horizontal: AppSpacing.lg,
-        vertical: AppSpacing.sm,
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.xs,
       ),
       color: AppColors.warningSoft,
       child: Row(
@@ -31,11 +31,26 @@ class OfflineBanner extends ConsumerWidget {
             color: AppColors.warning,
           ),
           const SizedBox(width: AppSpacing.sm),
-          Text(
-            'You\'re offline. Data shown may not be up to date.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: AppColors.text,
-              fontWeight: FontWeight.w600,
+          Flexible(
+            child: Text(
+              'Offline. Showing saved data.',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppColors.text,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: AppSpacing.xs),
+          IconButton(
+            tooltip: 'Check connection',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => ref.read(connectivityProvider.notifier).refresh(),
+            icon: const Icon(
+              Icons.refresh_rounded,
+              size: 18,
+              color: AppColors.warning,
             ),
           ),
         ],

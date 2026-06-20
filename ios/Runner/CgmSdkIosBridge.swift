@@ -1,26 +1,78 @@
 import AVFoundation
-import AVFoundation
 import CoreBluetooth
 import Flutter
 import Foundation
 import StayOnFramework
 import UIKit
 
-final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
+final class CgmSdkIosBridge: NSObject, FlutterStreamHandler, CBCentralManagerDelegate {
   static let shared = CgmSdkIosBridge()
 
   private var eventSink: FlutterEventSink?
+  private var bleStateEventSink: FlutterEventSink?
   private var callbacksRegistered = false
   private var authorized = false
   private var connected = false
+  private var isConnecting = false
   private var currentSensorSn: String?
   private var cachedReadings: [[String: Any]] = []
   private var methodChannel: FlutterMethodChannel?
   private var eventChannel: FlutterEventChannel?
-  private lazy var centralManager = CBCentralManager(delegate: nil, queue: nil, options: [CBCentralManagerOptionShowPowerAlertKey: false])
+  private var bleStateChannel: FlutterEventChannel?
+  private lazy var centralManager: CBCentralManager = {
+    return CBCentralManager(delegate: self, queue: nil, options: [CBCentralManagerOptionShowPowerAlertKey: false])
+  }()
 
   private override init() {
     super.init()
+  }
+
+  // MARK: - CBCentralManagerDelegate
+  func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    let stateStr: String
+    switch central.state {
+    case .poweredOn:
+      stateStr = "poweredOn"
+    case .poweredOff:
+      stateStr = "poweredOff"
+    case .unauthorized:
+      stateStr = "unauthorized"
+    case .resetting:
+      stateStr = "resetting"
+    case .unsupported:
+      stateStr = "unsupported"
+    case .unknown:
+      stateStr = "unknown"
+    @unknown default:
+      stateStr = "unknown"
+    }
+
+    DispatchQueue.main.async { [weak self] in
+      self?.bleStateEventSink?(["state": stateStr])
+    }
+
+    // Emit on main SDK event channel for backward compat
+    let poweredOn = central.state == .poweredOn
+    emit("bleState", [
+      "state": stateStr,
+      "poweredOn": poweredOn,
+    ])
+
+    // If BT turned off during connection, abort immediately
+    if central.state == .poweredOff && isConnecting {
+      isConnecting = false
+      connected = false
+      if let pending = pendingConnectResult {
+        pendingConnectResult = nil
+        DispatchQueue.main.async { pending(false) }
+      }
+      emit("connection", [
+        "connected": false,
+        "sn": currentSensorSn ?? "",
+        "message": "Bluetooth was turned off during connection.",
+        "status": "failed",
+      ])
+    }
   }
 
   func register(with messenger: FlutterBinaryMessenger) {
@@ -35,6 +87,15 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
       binaryMessenger: messenger
     )
     eventChannel?.setStreamHandler(self)
+
+    bleStateChannel = FlutterEventChannel(
+      name: "optimus_cgm/ble_state",
+      binaryMessenger: messenger
+    )
+    bleStateChannel?.setStreamHandler(BleStateStreamHandler(bridge: self))
+
+    // Trigger centralManager initialization to start receiving delegate callbacks
+    _ = centralManager
 
     registerCallbacksIfNeeded()
   }
@@ -116,9 +177,17 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
         }
       }
       result(nil)
+    case "openBluetoothSettings":
+      if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
+        DispatchQueue.main.async {
+          UIApplication.shared.open(settingsUrl)
+        }
+      }
+      result(nil)
     case "connect":
       connect(args: args, result: result)
     case "disconnect":
+      isConnecting = false
       SOFCGMManager.shared.disconnect()
       connected = false
       emit("connection", [
@@ -131,6 +200,25 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
       result(connected)
     case "isBluetoothEnabled":
       result(centralManager.state == .poweredOn)
+    case "checkBluetoothPermissions":
+      let authStatus: String
+      if #available(iOS 13.1, *) {
+        switch CBManager.authorization {
+        case .allowedAlways:
+          authStatus = "granted"
+        case .denied:
+          authStatus = "denied"
+        case .restricted:
+          authStatus = "denied"
+        case .notDetermined:
+          authStatus = "ios-managed"
+        @unknown default:
+          authStatus = "ios-managed"
+        }
+      } else {
+        authStatus = "ios-managed"
+      }
+      result(authStatus)
     case "getHistoryFromIndexStart":
       let start = intValue(args["indexStart"])
       SOFCGMManager.shared.getHistoryData(package_num: start)
@@ -193,6 +281,23 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
       return
     }
 
+    // Guard against concurrent connection attempts
+    if isConnecting {
+      result(false)
+      return
+    }
+
+    // Check Bluetooth state before attempting
+    if centralManager.state != .poweredOn {
+      emit("bleState", [
+        "state": "poweredOff",
+        "poweredOn": false,
+      ])
+      result(false)
+      return
+    }
+
+    isConnecting = true
     currentSensorSn = sn
     pendingConnectResult = result
     let packageNumber = intValue(args["packageNum"])
@@ -207,11 +312,13 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
     DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
       guard let self = self, let pending = self.pendingConnectResult else { return }
       self.pendingConnectResult = nil
+      self.isConnecting = false
       if !self.connected {
         self.emit("connection", [
           "connected": false,
           "sn": sn,
           "message": "Connection timed out.",
+          "status": "timeout",
         ])
         pending(false)
       }
@@ -230,10 +337,14 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
     } cgmConState: { [weak self] state in
       guard let self = self else { return }
       self.connected = state == .connected
+      if state == .connected || state == .disconnected {
+        self.isConnecting = false
+      }
       self.emit("connection", [
         "connected": self.connected,
         "sn": self.currentSensorSn ?? "",
         "state": state.rawValue,
+        "status": state == .connected ? "connected" : state == .disconnected ? "disconnected" : "connecting",
         "message": self.connectionStateText(state),
       ])
       // Resolve pending connect result
@@ -368,5 +479,51 @@ final class CgmSdkIosBridge: NSObject, FlutterStreamHandler {
 
   private func doubleValue(_ value: String?) -> Double {
     return Double(value ?? "") ?? 0
+  }
+
+  // Used by the BleStateStreamHandler to set the sink
+  fileprivate func setBleStateEventSink(_ sink: FlutterEventSink?) {
+    bleStateEventSink = sink
+  }
+
+  fileprivate func currentBleState() -> String {
+    switch centralManager.state {
+    case .poweredOn:
+      return "poweredOn"
+    case .poweredOff:
+      return "poweredOff"
+    case .unauthorized:
+      return "unauthorized"
+    case .resetting:
+      return "resetting"
+    case .unsupported:
+      return "unsupported"
+    case .unknown:
+      return "unknown"
+    @unknown default:
+      return "unknown"
+    }
+  }
+}
+
+/// Separate stream handler for the BLE state event channel.
+private class BleStateStreamHandler: NSObject, FlutterStreamHandler {
+  private weak var bridge: CgmSdkIosBridge?
+
+  init(bridge: CgmSdkIosBridge) {
+    self.bridge = bridge
+  }
+
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    bridge?.setBleStateEventSink(events)
+    // Send initial state
+    let initialState = bridge?.currentBleState() ?? "unknown"
+    events(["state": initialState])
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    bridge?.setBleStateEventSink(nil)
+    return nil
   }
 }

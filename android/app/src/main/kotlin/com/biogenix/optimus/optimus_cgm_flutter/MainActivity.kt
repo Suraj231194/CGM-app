@@ -1,10 +1,13 @@
 package com.biogenix.optimus.optimus_cgm_flutter
 
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanResult
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -57,10 +60,13 @@ private class CgmSdkBridge(private val activity: MainActivity) {
     private val manager = CgmDeviceManager.getInstance()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var eventSink: EventChannel.EventSink? = null
+    private var bleStateEventSink: EventChannel.EventSink? = null
     private var activeSn: String = ""
     private var pendingBluetoothPermissionResult: MethodChannel.Result? = null
     private var pendingCameraPermissionResult: MethodChannel.Result? = null
     private var connectTimeoutRunnable: Runnable? = null
+    private var bluetoothReceiver: BroadcastReceiver? = null
+    private var isConnecting: Boolean = false
 
     fun attach(flutterEngine: FlutterEngine) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
@@ -79,6 +85,24 @@ private class CgmSdkBridge(private val activity: MainActivity) {
                     }
                 },
             )
+        // BLE state event channel for real-time Bluetooth adapter state changes
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, BLE_STATE_CHANNEL)
+            .setStreamHandler(
+                object : EventChannel.StreamHandler {
+                    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                        bleStateEventSink = events
+                        registerBluetoothStateReceiver()
+                        // Send initial state
+                        val initialState = if (isBluetoothEnabled()) "poweredOn" else "poweredOff"
+                        events?.success(mapOf("state" to initialState))
+                    }
+
+                    override fun onCancel(arguments: Any?) {
+                        bleStateEventSink = null
+                        unregisterBluetoothStateReceiver()
+                    }
+                },
+            )
     }
 
     private fun handleMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -88,6 +112,7 @@ private class CgmSdkBridge(private val activity: MainActivity) {
             "requestBluetoothPermissions" -> requestBluetoothPermissions(result)
             "requestCameraPermission" -> requestCameraPermission(result)
             "openAppPermissionSettings" -> openAppPermissionSettings(result)
+            "openBluetoothSettings" -> openBluetoothSettings(result)
             "requestBleAndBackgroundPermissions" -> requestBleAndBackgroundPermissions(result)
             "requestIgnoreBatteryOptimization" -> requestIgnoreBatteryOptimization(result)
             "isBluetoothEnabled" -> {
@@ -97,6 +122,7 @@ private class CgmSdkBridge(private val activity: MainActivity) {
             "disconnect" -> {
                 connectTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
                 connectTimeoutRunnable = null
+                isConnecting = false
                 manager.disconnectDevice()
                 manager.stopScanBluetooth()
                 result.success(null)
@@ -108,6 +134,9 @@ private class CgmSdkBridge(private val activity: MainActivity) {
             "stopHeartbeat" -> {
                 CgmHeartbeatTimerUtil.INSTANCE.stopHeartbeat()
                 result.success(null)
+            }
+            "checkBluetoothPermissions" -> {
+                result.success(if (hasRequiredBluetoothPermissions()) "granted" else "denied")
             }
             else -> result.notImplemented()
         }
@@ -193,6 +222,13 @@ private class CgmSdkBridge(private val activity: MainActivity) {
             Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
             Uri.fromParts("package", activity.packageName, null),
         ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        activity.startActivity(intent)
+        result.success(null)
+    }
+
+    private fun openBluetoothSettings(result: MethodChannel.Result) {
+        val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         activity.startActivity(intent)
         result.success(null)
     }
@@ -309,7 +345,26 @@ private class CgmSdkBridge(private val activity: MainActivity) {
             )
             return
         }
+        // Guard against concurrent connection attempts
+        if (isConnecting) {
+            result.error(
+                "connect_in_progress",
+                "A connection attempt is already in progress.",
+                mapOf("sn" to sn),
+            )
+            return
+        }
+        if (!isBluetoothEnabled()) {
+            result.error(
+                "bluetooth_disabled",
+                "Bluetooth is turned off. Please enable Bluetooth.",
+                mapOf("sn" to sn),
+            )
+            sendEvent("bleState", mapOf("state" to "poweredOff", "poweredOn" to false))
+            return
+        }
 
+        isConnecting = true
         activeSn = sn
         val autoConnect = call.argument<Boolean>("autoConnect") ?: false
         sendEvent("connection", mapOf("status" to "scanning", "sn" to sn))
@@ -318,6 +373,7 @@ private class CgmSdkBridge(private val activity: MainActivity) {
         val timeoutRunnable = Runnable {
             if (!resultSent) {
                 resultSent = true
+                isConnecting = false
                 connectTimeoutRunnable = null
                 manager.stopScanBluetooth()
                 sendEvent("connection", mapOf("status" to "timeout", "sn" to sn, "message" to "Connection timed out. Ensure sensor is nearby."))
@@ -332,12 +388,20 @@ private class CgmSdkBridge(private val activity: MainActivity) {
             autoConnect,
             object : CgmConnectCallback {
                 override fun onDeviceDisconnected() {
-                    sendEvent("connection", mapOf("status" to "disconnected", "sn" to activeSn))
+                    // Only treat as a real disconnect if the initial connection
+                    // was already resolved (resultSent == true means we were
+                    // connected and now disconnected). If resultSent is false,
+                    // this is just a transient event during scanning/connecting.
+                    if (resultSent) {
+                        isConnecting = false
+                        sendEvent("connection", mapOf("status" to "disconnected", "sn" to activeSn))
+                    }
                 }
 
                 override fun onSuccess() {
                     mainHandler.removeCallbacks(timeoutRunnable)
                     connectTimeoutRunnable = null
+                    isConnecting = false
                     if (!resultSent) {
                         resultSent = true
                         manager.stopScanBluetooth()
@@ -349,6 +413,7 @@ private class CgmSdkBridge(private val activity: MainActivity) {
                 override fun onFailure(error: CgmError?) {
                     mainHandler.removeCallbacks(timeoutRunnable)
                     connectTimeoutRunnable = null
+                    isConnecting = false
                     if (!resultSent) {
                         resultSent = true
                         val payload = error.toMap() + mapOf("status" to "failed", "sn" to activeSn)
@@ -523,9 +588,59 @@ private class CgmSdkBridge(private val activity: MainActivity) {
         }
     }
 
+    private fun registerBluetoothStateReceiver() {
+        if (bluetoothReceiver != null) return
+        bluetoothReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+                val btState = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                val stateStr = when (btState) {
+                    BluetoothAdapter.STATE_ON -> "poweredOn"
+                    BluetoothAdapter.STATE_OFF -> "poweredOff"
+                    BluetoothAdapter.STATE_TURNING_OFF -> "poweredOff"
+                    BluetoothAdapter.STATE_TURNING_ON -> "resetting"
+                    else -> "unknown"
+                }
+                mainHandler.post {
+                    bleStateEventSink?.success(mapOf("state" to stateStr))
+                }
+                // Also emit on the main event channel for backward compatibility
+                val poweredOn = btState == BluetoothAdapter.STATE_ON
+                sendEvent("bleState", mapOf("state" to stateStr, "poweredOn" to poweredOn))
+
+                // If BT was turned off during scan/connection, abort immediately
+                if (btState == BluetoothAdapter.STATE_OFF || btState == BluetoothAdapter.STATE_TURNING_OFF) {
+                    if (isConnecting) {
+                        connectTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+                        connectTimeoutRunnable = null
+                        isConnecting = false
+                        manager.stopScanBluetooth()
+                        sendEvent("connection", mapOf(
+                            "status" to "failed",
+                            "sn" to activeSn,
+                            "message" to "Bluetooth was turned off during connection.",
+                        ))
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        activity.registerReceiver(bluetoothReceiver, filter)
+    }
+
+    private fun unregisterBluetoothStateReceiver() {
+        bluetoothReceiver?.let {
+            try {
+                activity.unregisterReceiver(it)
+            } catch (_: Exception) {}
+        }
+        bluetoothReceiver = null
+    }
+
     companion object {
         private const val METHOD_CHANNEL = "optimus_cgm/sdk"
         private const val EVENT_CHANNEL = "optimus_cgm/sdk_events"
+        private const val BLE_STATE_CHANNEL = "optimus_cgm/ble_state"
         private const val REQUEST_BLUETOOTH_PERMISSIONS = 4101
         private const val REQUEST_CAMERA_PERMISSION = 4102
     }

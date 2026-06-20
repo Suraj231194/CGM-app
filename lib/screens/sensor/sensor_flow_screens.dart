@@ -8,8 +8,13 @@ import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../app/theme.dart';
+import '../../core/ble/ble_connection_guard.dart';
+import '../../core/ble/ble_reconnection_policy.dart';
+import '../../core/ble/ble_state_monitor.dart';
 import '../../core/env/app_environment.dart';
+import '../../core/network/connectivity_monitor.dart';
 import '../../models/optimus_models.dart';
+import '../../repositories/cgm_sdk_repository.dart';
 import '../../services/cgm_sdk_service.dart';
 import '../../state/app_state.dart';
 import '../../utils/glucose_utils.dart';
@@ -28,6 +33,18 @@ bool _canContinueWithPermissionStatus(String status) {
       status == 'not-applicable';
 }
 
+bool _canContinueWithCameraPermissionStatus(String status) {
+  return status == 'granted';
+}
+
+bool _isPermissionError(String status) {
+  return status == 'error' || status.startsWith('error:');
+}
+
+CgmSdkRepository _cgmRepository() {
+  return CgmSdkRepository(sdk: CgmSdkServiceAdapter(CgmSdkService.instance));
+}
+
 String _bluetoothPermissionMessage(String status) {
   final platformSettings = defaultTargetPlatform == TargetPlatform.iOS
       ? 'iOS Settings'
@@ -39,7 +56,7 @@ String _bluetoothPermissionMessage(String status) {
   if (status == 'permanentlyDenied') {
     return 'Bluetooth permissions are permanently denied. Enable $permissionName in $platformSettings and try again.';
   }
-  if (status == 'error') {
+  if (_isPermissionError(status)) {
     return 'Could not request Bluetooth permission. Open $platformSettings, enable $permissionName, and try again.';
   }
   return 'Bluetooth permissions were not granted. Please allow $permissionName and try again.';
@@ -237,6 +254,23 @@ class _SensorActivationIntroScreenState
     final env = EnvConfig.current;
     final appId = env.cgmSdkAppId;
     final appSecret = env.cgmSdkAppSecret;
+    await ref.read(connectivityProvider.notifier).refresh();
+    if (ref.read(connectivityProvider) == ConnectivityStatus.offline) {
+      ref
+          .read(appControllerProvider.notifier)
+          .setCgmAuthState(
+            authorized: false,
+            error: 'Internet connection is required for SDK authorization.',
+          );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Connect to the internet before SDK authorization.'),
+          ),
+        );
+      }
+      return;
+    }
     if (appId.isEmpty || appSecret.isEmpty) {
       ref
           .read(appControllerProvider.notifier)
@@ -250,12 +284,18 @@ class _SensorActivationIntroScreenState
     setState(() => _authorizing = true);
     final controller = ref.read(appControllerProvider.notifier);
     try {
-      final service = CgmSdkService.instance;
-      await service.requestBluetoothPermissions();
-      final authorized = await service.auth(appId: appId, appSecret: appSecret);
+      final repository = _cgmRepository();
+      await repository.requestBluetoothPermissions();
+      final authResult = await repository.authorize(
+        appId: appId,
+        appSecret: appSecret,
+      );
+      final authorized = authResult.success;
       controller.setCgmAuthState(
         authorized: authorized,
-        error: authorized ? null : 'SDK authorization was not accepted.',
+        error: authorized
+            ? null
+            : authResult.error ?? 'SDK authorization was not accepted.',
       );
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -494,6 +534,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
 
   void _cancelConnection() {
     _stopElapsedTimer();
+    BleConnectionGuard.forceRelease();
     CgmSdkService.instance.disconnect();
     final controller = ref.read(appControllerProvider.notifier);
     controller.setCgmConnectionState(
@@ -515,6 +556,30 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
     WidgetRef ref,
     bool nativeAvailable,
   ) async {
+    if (nativeAvailable) {
+      final cameraStatus = await CgmSdkService.instance
+          .requestCameraPermission();
+      if (!_canContinueWithCameraPermissionStatus(cameraStatus)) {
+        if (!context.mounted) return;
+        final message = cameraStatus == 'permanentlyDenied'
+            ? 'Camera permission is permanently denied. Enable camera access in settings and try again.'
+            : 'Camera permission is required to scan the sensor code.';
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
+        if (cameraStatus == 'permanentlyDenied' || cameraStatus == 'error') {
+          await _showPermissionSettingsDialog(
+            context,
+            title: 'Camera permission required',
+            message:
+                'Open app settings and allow camera access for Optimus CGM.',
+          );
+        }
+        return;
+      }
+    }
+
+    if (!context.mounted) return;
     final rawScan = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
@@ -558,12 +623,59 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
 
     final controller = ref.read(appControllerProvider.notifier);
     final service = CgmSdkService.instance;
+    final repository = _cgmRepository();
 
     if (nativeAvailable) {
+      // Debounce: prevent multiple simultaneous connection attempts
+      if (!BleConnectionGuard.tryAcquire()) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('A connection attempt is already in progress. Please wait.'),
+            ),
+          );
+        }
+        return;
+      }
+
+      // BLE stack health check
+      final bleNotifier = ref.read(bleStateProvider.notifier);
+      if (bleNotifier.isStackUnhealthy) {
+        BleConnectionGuard.release();
+        if (context.mounted) {
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Bluetooth Issue Detected'),
+              content: const Text(
+                'Multiple Bluetooth failures have been detected. '
+                'Try toggling Bluetooth off and on in your device settings, '
+                'or restart your device if the issue persists.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('OK'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    unawaited(CgmSdkService.instance.openBluetoothSettings());
+                  },
+                  child: const Text('Bluetooth settings'),
+                ),
+              ],
+            ),
+          );
+        }
+        return;
+      }
+
       final appState = ref.read(appControllerProvider);
       final authorized =
-          appState.cgmAuthorized || await service.checkAuthorized();
+          appState.cgmAuthorized || await repository.checkAuthorized();
       if (!authorized) {
+        BleConnectionGuard.release();
         controller.setCgmConnectionState(
           status: 'SDK authorization required',
           connected: false,
@@ -585,6 +697,9 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
       }
     }
 
+    // Cancel any active reconnection since user is manually connecting
+    ref.read(bleReconnectionProvider.notifier).cancel();
+
     controller.scanAndConnectSensor(
       serialNumber: serial,
       previewOnly: !nativeAvailable,
@@ -601,9 +716,10 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
     });
     _startElapsedTimer();
     try {
-      final permissionStatus = await service.requestBluetoothPermissions();
+      final permissionStatus = await repository.requestBluetoothPermissions();
       if (!_canContinueWithPermissionStatus(permissionStatus)) {
         _stopElapsedTimer();
+        BleConnectionGuard.release();
         final message = _bluetoothPermissionMessage(permissionStatus);
         controller.setCgmConnectionState(
           status: 'Bluetooth permission required',
@@ -640,6 +756,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
       final btEnabled = await service.isBluetoothEnabled();
       if (!btEnabled) {
         _stopElapsedTimer();
+        BleConnectionGuard.release();
         controller.setCgmConnectionState(
           status: 'Bluetooth disabled',
           connected: false,
@@ -661,6 +778,13 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
                   onPressed: () => Navigator.of(ctx).pop(),
                   child: const Text('OK'),
                 ),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    unawaited(CgmSdkService.instance.openBluetoothSettings());
+                  },
+                  child: const Text('Bluetooth settings'),
+                ),
               ],
             ),
           );
@@ -674,10 +798,16 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
         return;
       }
 
-      final connected = await service.connect(sensorSn: serial);
+      if (!context.mounted) return;
+      await _prepareBackgroundConnectivity(context, ref, repository);
+
+      final connectResult = await repository.connect(sensorSn: serial);
+      final connected = connectResult.success;
 
       _stopElapsedTimer();
       if (connected) {
+        BleConnectionGuard.release();
+        ref.read(bleStateProvider.notifier).resetFailures();
         unawaited(HapticFeedback.mediumImpact());
         controller.setCgmConnectionState(
           status: 'Sensor connected',
@@ -687,11 +817,19 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
         );
         await service.startHeartbeat();
         try {
+          // Resume from last sync checkpoint if available
+          final resumeIndex = BleSyncCheckpoint.resumeIndex(serial);
           final history = await service.getHistoryFromIndexStart(
             sensorSn: serial,
+            indexStart: resumeIndex,
           );
           if (history.isNotEmpty) {
             controller.applyCgmReadings(history);
+            // Update checkpoint with latest synced index
+            final maxIndex = history
+                .map((r) => r.timeOffset)
+                .reduce((a, b) => a > b ? a : b);
+            BleSyncCheckpoint.update(sensorSn: serial, lastIndex: maxIndex);
           }
         } catch (_) {
           controller.addCgmLog(
@@ -700,6 +838,8 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
         }
         if (context.mounted) unawaited(context.push('/sensor/warmup'));
       } else {
+        BleConnectionGuard.release();
+        ref.read(bleStateProvider.notifier).recordFailure();
         final latestError = ref.read(appControllerProvider).cgmLastError;
         // Connection returned false: sensor not found or timed out.
         controller.setCgmConnectionState(
@@ -708,6 +848,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
           connecting: false,
           sensorSn: serial,
           error:
+              connectResult.error ??
               latestError ??
               'Could not connect to sensor. Ensure the sensor is nearby, powered on, and Bluetooth is enabled.',
         );
@@ -724,6 +865,7 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
       }
     } catch (error) {
       _stopElapsedTimer();
+      BleConnectionGuard.release();
       controller.setCgmConnectionState(
         status: 'Sensor connection failed',
         connected: false,
@@ -768,6 +910,49 @@ class _ScanSensorScreenState extends ConsumerState<ScanSensorScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _prepareBackgroundConnectivity(
+    BuildContext context,
+    WidgetRef ref,
+    CgmSdkRepository repository,
+  ) async {
+    final controller = ref.read(appControllerProvider.notifier);
+    final bleStatus = await repository.requestBleAndBackgroundPermissions();
+    if (!_canContinueWithPermissionStatus(bleStatus)) {
+      const message =
+          'Background Bluetooth permission was not fully granted. Foreground connection can continue, but background reconnect may be limited.';
+      controller.addCgmLog(message);
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text(message)));
+        if (bleStatus == 'permanentlyDenied' || _isPermissionError(bleStatus)) {
+          await _showPermissionSettingsDialog(
+            context,
+            title: 'Background Bluetooth permission',
+            message:
+                'Open app settings and allow Bluetooth and background access for Optimus CGM.',
+          );
+        }
+      }
+    } else {
+      controller.addCgmLog('Background Bluetooth permission ready.');
+    }
+
+    final batteryStatus = await repository.requestIgnoreBatteryOptimization();
+    if (!_canContinueWithPermissionStatus(batteryStatus)) {
+      const message =
+          'Battery optimization is not disabled. Background sensor reconnect may be delayed.';
+      controller.addCgmLog(message);
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text(message)));
+      }
+    } else if (batteryStatus == 'granted') {
+      controller.addCgmLog('Battery optimization exemption ready.');
+    }
   }
 }
 
@@ -816,7 +1001,8 @@ class _SensorQrScannerSheetState extends State<_SensorQrScannerSheet> {
       setState(() {
         _checkingCamera = false;
         _cameraReady = false;
-        _errorText = state.error!.errorDetails?.message ??
+        _errorText =
+            state.error!.errorDetails?.message ??
             'Camera could not start. Ensure camera permission is granted and try again.';
       });
     }

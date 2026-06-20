@@ -84,6 +84,17 @@ class CgmSdkService {
     }
   }
 
+  Future<void> openBluetoothSettings() async {
+    try {
+      await _methodChannel.invokeMethod<void>('openBluetoothSettings');
+    } on PlatformException catch (e) {
+      debugPrint(
+        '[CgmSdk] openBluetoothSettings PlatformException: ${e.message}',
+      );
+      await openAppPermissionSettings();
+    }
+  }
+
   Future<String> requestBleAndBackgroundPermissions() async {
     try {
       final result = await _methodChannel.invokeMethod<String>(
@@ -215,6 +226,21 @@ class CgmSdkService {
       await _methodChannel.invokeMethod<void>('stopHeartbeat');
     } on PlatformException catch (e) {
       debugPrint('[CgmSdk] stopHeartbeat PlatformException: ${e.message}');
+    }
+  }
+
+  /// Check if Bluetooth permissions are currently granted without prompting.
+  Future<String> checkBluetoothPermissions() async {
+    try {
+      final result = await _methodChannel.invokeMethod<String>(
+        'checkBluetoothPermissions',
+      );
+      return result ?? 'unknown';
+    } on PlatformException catch (e) {
+      debugPrint(
+        '[CgmSdk] checkBluetoothPermissions PlatformException: ${e.message}',
+      );
+      return 'error';
     }
   }
 

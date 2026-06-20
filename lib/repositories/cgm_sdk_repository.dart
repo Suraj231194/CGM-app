@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../core/error/app_error_handler.dart';
 import '../core/network/retry_policy.dart';
+import '../services/cgm_sdk_service.dart';
 
 /// A safe wrapper around [CgmSdkService] that catches [PlatformException]
 /// and provides retry/timeout logic for BLE operations.
@@ -26,10 +27,15 @@ class CgmSdkRepository {
     required String appSecret,
   }) async {
     try {
-      final result = await _retryPolicy.execute(
-        () => withTimeout(() => _sdk.auth(appId: appId, appSecret: appSecret)),
-        shouldRetry: _isRetryableError,
-      );
+      final result = await _retryPolicy.execute(() async {
+        final success = await withTimeout(
+          () => _sdk.auth(appId: appId, appSecret: appSecret),
+        );
+        if (!success) {
+          throw const CgmSdkOperationFailed('SDK authorization failed');
+        }
+        return success;
+      }, shouldRetry: _isRetryableError);
       return (success: result, error: null);
     } on PlatformException catch (e) {
       AppErrorHandler.report(e, null, 'CgmSdkRepository.authorize');
@@ -63,17 +69,20 @@ class CgmSdkRepository {
     int packageNum = 0,
   }) async {
     try {
-      final result = await _retryPolicy.execute(
-        () => withTimeout(
+      final result = await _retryPolicy.execute(() async {
+        final success = await withTimeout(
           () => _sdk.connect(
             sensorSn: sensorSn,
             autoConnect: autoConnect,
             packageNum: packageNum,
           ),
           timeout: const Duration(seconds: 45),
-        ),
-        shouldRetry: _isRetryableError,
-      );
+        );
+        if (!success) {
+          throw const CgmSdkOperationFailed('Sensor connection failed');
+        }
+        return success;
+      }, shouldRetry: _isRetryableError);
       return (success: result, error: null);
     } on PlatformException catch (e) {
       AppErrorHandler.report(e, null, 'CgmSdkRepository.connect');
@@ -81,6 +90,9 @@ class CgmSdkRepository {
     } on TimeoutException catch (e) {
       AppErrorHandler.report(e, null, 'CgmSdkRepository.connect');
       return (success: false, error: 'Connection timed out');
+    } on CgmSdkOperationFailed catch (e) {
+      AppErrorHandler.report(e, null, 'CgmSdkRepository.connect');
+      return (success: false, error: e.message);
     } catch (e) {
       AppErrorHandler.report(e, null, 'CgmSdkRepository.connect');
       return (success: false, error: e.toString());
@@ -179,11 +191,80 @@ class CgmSdkRepository {
 
   bool _isRetryableError(Object error) {
     if (error is PlatformException) {
-      // Don't retry auth errors or invalid arguments.
-      return error.code != 'INVALID_ARGUMENT' && error.code != 'AUTH_FAILED';
+      // Don't retry auth errors, invalid arguments, or concurrent connect guard.
+      return error.code != 'INVALID_ARGUMENT' &&
+          error.code != 'AUTH_FAILED' &&
+          error.code != 'connect_in_progress' &&
+          error.code != 'bluetooth_permission_required' &&
+          error.code != 'bluetooth_disabled';
     }
     if (error is TimeoutException) return true;
+    if (error is CgmSdkOperationFailed) return true;
     return false;
+  }
+}
+
+class CgmSdkOperationFailed implements Exception {
+  const CgmSdkOperationFailed(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class CgmSdkServiceAdapter implements CgmSdkServiceContract {
+  CgmSdkServiceAdapter(this._service);
+
+  final CgmSdkService _service;
+
+  @override
+  Future<bool> auth({required String appId, required String appSecret}) {
+    return _service.auth(appId: appId, appSecret: appSecret);
+  }
+
+  @override
+  Future<bool> checkAuthorized() => _service.checkAuthorized();
+
+  @override
+  Future<bool> connect({
+    required String sensorSn,
+    bool autoConnect = false,
+    int packageNum = 0,
+  }) {
+    return _service.connect(
+      sensorSn: sensorSn,
+      autoConnect: autoConnect,
+      packageNum: packageNum,
+    );
+  }
+
+  @override
+  Future<void> disconnect() => _service.disconnect();
+
+  @override
+  Stream<CgmSdkEventData> get eventStream {
+    return _service.events.map(
+      (event) => CgmSdkEventData(type: event.type, data: event.data),
+    );
+  }
+
+  @override
+  Future<bool> isConnected() => _service.isConnected();
+
+  @override
+  Future<String> requestBleAndBackgroundPermissions() {
+    return _service.requestBleAndBackgroundPermissions();
+  }
+
+  @override
+  Future<String> requestBluetoothPermissions() {
+    return _service.requestBluetoothPermissions();
+  }
+
+  @override
+  Future<String> requestIgnoreBatteryOptimization() {
+    return _service.requestIgnoreBatteryOptimization();
   }
 }
 

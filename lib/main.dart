@@ -4,6 +4,8 @@ import 'package:firebase_core/firebase_core.dart';
 
 import 'app/router.dart';
 import 'app/theme.dart';
+import 'core/ble/ble_permission_monitor.dart';
+import 'core/ble/ble_state_monitor.dart';
 import 'core/error/app_error_handler.dart';
 import 'core/lifecycle/app_lifecycle_observer.dart';
 import 'core/observers/app_provider_observer.dart';
@@ -43,8 +45,11 @@ class OptimusCgmApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    ref.watch(persistentReadingBootstrapProvider);
     ref.watch(cgmSdkEventBridgeProvider);
     ref.watch(appLifecycleProvider);
+    ref.watch(bleStateProvider);
+    ref.watch(blePermissionWatcherProvider);
     final router = ref.watch(appRouterProvider);
     final isAuthenticated = ref.watch(
       appControllerProvider.select((s) => s.isAuthenticated),

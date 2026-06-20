@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/theme.dart';
+import '../core/cache/glucose_reading_cache.dart';
 import '../data/optimus_seed_data.dart';
 import '../models/optimus_models.dart';
 import '../services/cgm_sdk_service.dart';
@@ -144,6 +147,8 @@ class AppState {
 }
 
 class AppController extends Notifier<AppState> {
+  bool _persistentReadingsRestored = false;
+
   @override
   AppState build() {
     return AppState(
@@ -599,6 +604,29 @@ class AppController extends Notifier<AppState> {
         ...state.syncLogs,
       ],
     );
+    unawaited(_persistLiveReadings());
+  }
+
+  Future<void> restorePersistentReadings() async {
+    if (_persistentReadingsRestored) return;
+    _persistentReadingsRestored = true;
+
+    final cached = await PersistentGlucoseReadingCache.load();
+    if (cached.isEmpty) return;
+
+    final byId = <String, OptimusGlucoseReading>{
+      for (final reading in state.readings) reading.id: reading,
+      for (final reading in cached) reading.id: reading,
+    };
+    final merged = byId.values.toList()
+      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+    state = state.copyWith(
+      readings: merged,
+      cgmSdkLogs: _prependLog(
+        'Offline glucose cache restored (${cached.length} reading${cached.length == 1 ? '' : 's'}).',
+      ),
+    );
   }
 
   void finishWarmupNow() {
@@ -777,11 +805,22 @@ class AppController extends Notifier<AppState> {
         })
         .toList();
   }
+
+  Future<void> _persistLiveReadings() {
+    return PersistentGlucoseReadingCache.save(
+      state.readings.where((reading) => reading.id.startsWith('sdk-')),
+    );
+  }
 }
 
 final appControllerProvider = NotifierProvider<AppController, AppState>(
   AppController.new,
 );
+
+final persistentReadingBootstrapProvider = Provider<void>((ref) {
+  final controller = ref.read(appControllerProvider.notifier);
+  unawaited(controller.restorePersistentReadings());
+});
 
 final selectedPatientProvider = Provider<Patient?>((ref) {
   final state = ref.watch(appControllerProvider);

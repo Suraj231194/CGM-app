@@ -23,6 +23,7 @@ import '../screens/sensor/sensor_flow_screens.dart';
 import '../screens/support/support_hub_screen.dart';
 import '../state/app_state.dart';
 import '../widgets/app_shell.dart';
+import '../widgets/offline_banner.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   return GoRouter(
@@ -298,7 +299,12 @@ class MainScaffold extends ConsumerWidget {
         decoration: BoxDecoration(
           color: Theme.of(context).scaffoldBackgroundColor,
         ),
-        child: ClipRect(child: child),
+        child: Column(
+          children: [
+            const OfflineBanner(),
+            Expanded(child: ClipRect(child: child)),
+          ],
+        ),
       ),
       bottomNavigationBar: NavigationBar(
         height: 72,
