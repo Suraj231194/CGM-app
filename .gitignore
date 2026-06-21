@@ -40,7 +40,7 @@ test/failures/
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
-/build/
+**/build/
 /coverage/
 **/Flutter/ephemeral/
 **/ephemeral/
@@ -51,6 +51,14 @@ test/failures/
 !.env.example
 *.local
 **/local.properties
+credentials.txt
+
+# IDE and tooling caches
+.vscode/
+*.code-workspace
+**/.gradle/
+**/captures/
+**/.cxx/
 
 # Mobile signing and private certificates
 android/key.properties
