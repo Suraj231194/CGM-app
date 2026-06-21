@@ -119,6 +119,11 @@ private class CgmSdkBridge(private val activity: MainActivity) {
                 result.success(isBluetoothEnabled())
             }
             "connect" -> connect(call, result)
+            "startScan" -> startScan(result)
+            "stopScan" -> {
+                manager.stopScanBluetooth()
+                result.success(null)
+            }
             "disconnect" -> {
                 connectTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
                 connectTimeoutRunnable = null
@@ -171,31 +176,7 @@ private class CgmSdkBridge(private val activity: MainActivity) {
     }
 
     private fun requestBluetoothPermissions(result: MethodChannel.Result) {
-        if (hasRequiredBluetoothPermissions()) {
-            result.success("granted")
-            return
-        }
-
-        if (pendingBluetoothPermissionResult != null) {
-            result.error("permission_request_active", "A Bluetooth permission request is already active.", null)
-            return
-        }
-
-        val permissions = requiredBluetoothPermissions()
-            .filterNot(::isPermissionGranted)
-            .toTypedArray()
-
-        if (permissions.isEmpty()) {
-            result.success("granted")
-            return
-        }
-
-        pendingBluetoothPermissionResult = result
-        ActivityCompat.requestPermissions(
-            activity,
-            permissions,
-            REQUEST_BLUETOOTH_PERMISSIONS,
-        )
+        CgmPermissionHelper(activity).requestBluetoothPermission(permissionCallback(result))
     }
 
     private fun requestCameraPermission(result: MethodChannel.Result) {
@@ -279,28 +260,7 @@ private class CgmSdkBridge(private val activity: MainActivity) {
             return true
         }
 
-        if (requestCode != REQUEST_BLUETOOTH_PERMISSIONS) return false
-
-        val result = pendingBluetoothPermissionResult ?: return true
-        pendingBluetoothPermissionResult = null
-
-        val deniedPermissions = if (grantResults.isEmpty()) {
-            permissions.toList()
-        } else {
-            permissions.filterIndexed { index, _ ->
-                grantResults.getOrNull(index) != PackageManager.PERMISSION_GRANTED
-            }
-        }
-
-        val status = when {
-            deniedPermissions.isEmpty() -> "granted"
-            deniedPermissions.any { !ActivityCompat.shouldShowRequestPermissionRationale(activity, it) } -> "permanentlyDenied"
-            else -> "denied"
-        }
-
-        sendEvent("permissions", mapOf("status" to status))
-        mainHandler.post { result.success(status) }
-        return true
+        return false
     }
 
     private fun requiredBluetoothPermissions(): List<String> {
@@ -329,6 +289,28 @@ private class CgmSdkBridge(private val activity: MainActivity) {
         } catch (_: SecurityException) {
             false
         }
+    }
+
+    private fun startScan(result: MethodChannel.Result) {
+        if (!hasRequiredBluetoothPermissions()) {
+            result.error("permission_required", "Bluetooth permissions required", null)
+            return
+        }
+        manager.startScanBluetooth(object : CgmScanCallback {
+            override fun onScanResult(callbackType: Int, scanResult: ScanResult) {
+                val data = mapOf(
+                    "name" to (scanResult.device?.name ?: "Unknown"),
+                    "address" to scanResult.device?.address,
+                    "rssi" to scanResult.rssi
+                )
+                sendEvent("scanResult", data)
+            }
+
+            override fun onScanFailed(errorCode: Int, message: String?) {
+                sendEvent("scanFailed", mapOf("code" to errorCode, "message" to message))
+            }
+        })
+        result.success(null)
     }
 
     private fun connect(call: MethodCall, result: MethodChannel.Result) {
@@ -388,14 +370,8 @@ private class CgmSdkBridge(private val activity: MainActivity) {
             autoConnect,
             object : CgmConnectCallback {
                 override fun onDeviceDisconnected() {
-                    // Only treat as a real disconnect if the initial connection
-                    // was already resolved (resultSent == true means we were
-                    // connected and now disconnected). If resultSent is false,
-                    // this is just a transient event during scanning/connecting.
-                    if (resultSent) {
-                        isConnecting = false
-                        sendEvent("connection", mapOf("status" to "disconnected", "sn" to activeSn))
-                    }
+                    isConnecting = false
+                    sendEvent("connection", mapOf("status" to "disconnected", "sn" to activeSn))
                 }
 
                 override fun onSuccess() {
